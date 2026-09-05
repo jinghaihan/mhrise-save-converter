@@ -33,7 +33,10 @@ def parse_args() -> argparse.Namespace:
 
 def copy_required_files(target_dir: Path, package_dir: Path, target: str) -> None:
   executable_suffix = ".exe" if "windows" in target else ""
-  binaries = (("mhrise-save-converter", "mhrise-save"), ("mhrise-save-gui", "mhrise-save-gui"))
+  binaries = (
+    ("mhrise-save-converter", "mhrise-save"),
+    ("mhrise-save-converter-gui", "mhrise-save-converter-gui"),
+  )
   for source_name, package_name in binaries:
     source = target_dir / f"{source_name}{executable_suffix}"
     if not source.is_file():

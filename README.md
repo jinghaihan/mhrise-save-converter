@@ -10,7 +10,7 @@ Native GUI and library tooling for converting *Monster Hunter Rise* saves betwee
 Download the latest package from [Releases](https://github.com/jinghaihan/mhrise-save-converter/releases), or run it from source:
 
 ```bash
-cargo run --release --bin mhrise-save-gui
+cargo run --release --bin mhrise-save-converter-gui
 ```
 
 Choose a source save, a new output directory, and the target platform. For Steam conversion, enter the relevant SteamID64 and preferably select an existing target save as the template; the app can read the destination Curve Index automatically. The source and template are never modified. The GUI performs a preflight check, converts in the background, shows per-file progress, and can open the output folder.
