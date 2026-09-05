@@ -31,4 +31,4 @@ This project is an independent implementation and does not include the reference
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[MIT](./LICENSE) License © [jinghaihan](https://github.com/jinghaihan)
