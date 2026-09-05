@@ -2,7 +2,7 @@
 name = "mhrise-save-converter"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A CLI for inspecting and converting Monster Hunter Rise save containers."
 license = "MIT"
 readme = "README.md"
