@@ -1,5 +1,6 @@
 use std::{
   path::PathBuf,
+  process::Command,
   sync::mpsc::{self, Receiver, TryRecvError},
   thread,
   time::Duration,
@@ -44,6 +45,7 @@ pub struct GuiApp {
   preflight: Option<PreflightReport>,
   status: String,
   progress: Option<ConversionProgress>,
+  output_directory: Option<PathBuf>,
   worker: Option<Receiver<WorkerEvent>>,
 }
 
@@ -62,6 +64,7 @@ impl Default for GuiApp {
       preflight: None,
       status: "Choose a source save directory to begin.".to_owned(),
       progress: None,
+      output_directory: None,
       worker: None,
     }
   }
@@ -153,6 +156,7 @@ impl GuiApp {
     let (sender, receiver) = mpsc::channel();
     self.preflight = Some(report);
     self.progress = None;
+    self.output_directory = Some(output.clone());
     self.status = "Converting…".to_owned();
     self.worker = Some(receiver);
     thread::spawn(move || {
@@ -189,6 +193,24 @@ impl GuiApp {
     }
     if keep_receiver {
       self.worker = Some(receiver);
+    }
+  }
+
+  fn open_output_directory(&mut self) {
+    let Some(path) = self.output_directory.as_deref() else {
+      self.status = "No converted output is available yet.".to_owned();
+      return;
+    };
+    let command = if cfg!(target_os = "macos") {
+      "open"
+    } else if cfg!(target_os = "windows") {
+      "explorer"
+    } else {
+      "xdg-open"
+    };
+    match Command::new(command).arg(path).spawn() {
+      Ok(_) => self.status = format!("Opened {}", path.display()),
+      Err(error) => self.status = format!("Could not open output directory: {error}"),
     }
   }
 
@@ -253,6 +275,12 @@ impl eframe::App for GuiApp {
 
       ui.separator();
       ui.label(&self.status);
+      ui.horizontal(|ui| {
+        let output_available = self.output_directory.as_deref().is_some_and(|path| path.is_dir());
+        if ui.add_enabled(output_available, egui::Button::new("Open output folder")).clicked() {
+          self.open_output_directory();
+        }
+      });
       if let Some(progress) = &self.progress {
         let fraction = progress.completed as f32 / progress.total.max(1) as f32;
         ui.add(
