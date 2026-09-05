@@ -27,13 +27,15 @@ pub enum TargetPlatform {
   Steam,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ConversionRequest {
   pub target: TargetPlatform,
   pub source_steamid64: Option<u64>,
   pub target_steamid64: Option<u64>,
   pub source_curve_index: Option<usize>,
   pub target_curve_index: Option<usize>,
+  pub target_reference: Option<PathBuf>,
+  pub force: bool,
 }
 
 pub type ConversionOptions = ConversionRequest;
@@ -42,13 +44,11 @@ pub fn convert_path(
   input: &Path,
   output: &Path,
   request: ConversionRequest,
-  target_reference: Option<&Path>,
-  force: bool,
 ) -> Result<Vec<PathBuf>> {
   let files = discover_save_files(input)?;
   let output_is_directory = input.is_dir();
   if output_is_directory {
-    if output.exists() && !force {
+    if output.exists() && !request.force {
       let mut entries = fs::read_dir(output)?;
       if entries.next().transpose()?.is_some() {
         bail!(
@@ -59,7 +59,7 @@ pub fn convert_path(
     }
     fs::create_dir_all(output)
       .with_context(|| format!("could not create output directory {}", output.display()))?;
-  } else if output.exists() && !force {
+  } else if output.exists() && !request.force {
     bail!("output file {} already exists; use --force to overwrite it", output.display());
   } else if let Some(parent) = output.parent() {
     fs::create_dir_all(parent)?;
@@ -91,11 +91,13 @@ pub fn convert_path(
     }
     let converted = match file.kind {
       SaveFileKind::Core => {
-        let target_template = target_reference
+        let target_template = options
+          .target_reference
+          .as_deref()
           .map(|reference| read_matching_reference(reference, &file.path))
           .transpose()?
           .flatten();
-        convert_bytes_with_template(&data, target_template.as_deref(), options)
+        convert_bytes_with_template(&data, target_template.as_deref(), options.clone())
       }
       SaveFileKind::Auxiliary => {
         convert_auxiliary_bytes(&data, options.target, options.target_steamid64)
@@ -107,6 +109,148 @@ pub fn convert_path(
     written.push(output_path);
   }
   Ok(written)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreflightSeverity {
+  Warning,
+  Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightIssue {
+  pub severity: PreflightSeverity,
+  pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightReport {
+  pub source_platform: Option<Platform>,
+  pub file_count: usize,
+  pub core_file_count: usize,
+  pub auxiliary_file_count: usize,
+  pub target_reference_available: bool,
+  pub issues: Vec<PreflightIssue>,
+}
+
+impl PreflightReport {
+  pub fn errors(&self) -> impl Iterator<Item = &str> {
+    self.issues.iter().filter_map(|issue| {
+      (issue.severity == PreflightSeverity::Error).then_some(issue.message.as_str())
+    })
+  }
+
+  pub fn warnings(&self) -> impl Iterator<Item = &str> {
+    self.issues.iter().filter_map(|issue| {
+      (issue.severity == PreflightSeverity::Warning).then_some(issue.message.as_str())
+    })
+  }
+
+  pub fn can_convert(&self) -> bool {
+    !self.issues.iter().any(|issue| issue.severity == PreflightSeverity::Error)
+  }
+}
+
+pub fn preflight_path(
+  input: &Path,
+  output: &Path,
+  request: &ConversionRequest,
+) -> Result<PreflightReport> {
+  let files = discover_save_files(input)?;
+  let source_platform =
+    files.iter().find(|file| file.kind == SaveFileKind::Core).map(|file| file.platform);
+  let core_file_count = files.iter().filter(|file| file.kind == SaveFileKind::Core).count();
+  let auxiliary_file_count = files.len() - core_file_count;
+  let mut issues = Vec::new();
+
+  if source_platform.is_none() {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "no core save files were found".to_owned(),
+    });
+  }
+  if files.iter().any(|file| file.checksum != "valid") {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "one or more save files have an invalid outer checksum".to_owned(),
+    });
+  }
+  if output == input {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "output must be different from the source".to_owned(),
+    });
+  }
+  if output.exists()
+    && output.is_dir()
+    && !request.force
+    && fs::read_dir(output)?.next().transpose()?.is_some()
+  {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "output directory is not empty; enable overwrite explicitly".to_owned(),
+    });
+  }
+
+  if source_platform == Some(Platform::Steam) && request.source_steamid64.is_none() {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "Steam source requires a SteamID64".to_owned(),
+    });
+  }
+  if request.target == TargetPlatform::Steam {
+    if request.target_steamid64.is_none() {
+      issues.push(PreflightIssue {
+        severity: PreflightSeverity::Error,
+        message: "Steam target requires a SteamID64".to_owned(),
+      });
+    }
+    if request.target_reference.is_none() && request.target_curve_index.is_none() {
+      issues.push(PreflightIssue {
+        severity: PreflightSeverity::Error,
+        message: "Steam target requires a target template or Curve Index".to_owned(),
+      });
+    }
+    if request.target_reference.is_none() {
+      issues.push(PreflightIssue {
+        severity: PreflightSeverity::Warning,
+        message: "no Steam template selected; built-in Steam defaults will be used".to_owned(),
+      });
+    }
+  }
+  if request.target == TargetPlatform::NintendoSwitch
+    && source_platform == Some(Platform::Steam)
+    && request.target_reference.is_none()
+  {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "Steam-to-Switch conversion requires a Switch target template".to_owned(),
+    });
+  }
+
+  let target_reference_available =
+    request.target_reference.as_ref().is_some_and(|path| path.exists());
+  if request.target_reference.is_some() && !target_reference_available {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "selected target template does not exist".to_owned(),
+    });
+  }
+  if core_file_count == 0 {
+    issues.push(PreflightIssue {
+      severity: PreflightSeverity::Error,
+      message: "the input contains no convertible core save".to_owned(),
+    });
+  }
+
+  Ok(PreflightReport {
+    source_platform,
+    file_count: files.len(),
+    core_file_count,
+    auxiliary_file_count,
+    target_reference_available,
+    issues,
+  })
 }
 
 fn read_matching_reference(reference: &Path, source_file: &Path) -> Result<Option<Vec<u8>>> {
@@ -425,6 +569,8 @@ mod tests {
         target_steamid64: None,
         source_curve_index: None,
         target_curve_index: None,
+        target_reference: None,
+        force: false,
       },
     )
     .expect_err("invalid source checksum should be rejected");
@@ -527,6 +673,8 @@ mod tests {
         target_steamid64: Some(TEST_STEAM_ID),
         source_curve_index: None,
         target_curve_index: Some(0),
+        target_reference: None,
+        force: false,
       },
     )
     .expect("template conversion should succeed");
