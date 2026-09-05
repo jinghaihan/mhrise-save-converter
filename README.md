@@ -1,5 +1,5 @@
 > [!WARNING]
-> **WIP** — Experimental and not yet production-ready. Always back up your saves before use.
+> **Test status:** Nintendo Switch → Steam conversion has been tested and confirmed working. Steam → Nintendo Switch and Steam → Steam conversion have not been tested yet. Always back up your saves before use.
 
 # MHRise Save Converter
 
@@ -7,7 +7,7 @@ Save-container tooling and experimental cross-platform conversion research for *
 
 ## Status
 
-Steam-to-Steam account resigning is implemented at the DSSS/Citrus container layer. Experimental cross-platform schema translation is implemented as well: a destination save can be used as a schema/default template, and Switch-to-Steam conversion can fall back to built-in Steam defaults. In-game validation across more saves and game versions is still pending, so all conversion paths remain WIP.
+Steam-to-Steam account resigning is implemented at the DSSS/Citrus container layer. Experimental cross-platform schema translation is implemented as well: a destination save can be used as a schema/default template, and Switch-to-Steam conversion can fall back to built-in Steam defaults. Nintendo Switch → Steam has been tested in-game and is working; Steam → Nintendo Switch and Steam → Steam still need in-game validation.
 
 ## Save Structure
 
@@ -57,6 +57,18 @@ cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
   --target-steamid64 76561198382766028 \
   --target-curve-index 116
 ```
+
+### Steam identifiers and Curve Index
+
+The SteamID64 is the 17-digit numeric Steam account identifier, not a custom profile name or vanity URL. You can get it from the numeric URL of your Steam profile (`steamcommunity.com/profiles/<STEAMID64>`); if your profile only has a custom `/id/...` URL, use a SteamID lookup tool or open the profile in a browser and copy its canonical numeric profile URL. Do not paste an email address, display name, or the custom profile name into these options.
+
+- For Nintendo Switch → Steam, `--target-steamid64` is the Steam account that will own the converted save.
+- For Steam → Nintendo Switch, `--source-steamid64` is the Steam account that currently owns the source save.
+- For Steam → Steam, provide both the source and destination account IDs.
+- `--source-curve-index` is not an account ID. When omitted, the converter detects it from the Steam source save.
+- `--target-curve-index` is also not an account ID. Prefer `--target-reference` pointing to an existing Steam save for the destination account; the converter reads the target Curve Index from that template automatically. Only enter the Curve Index manually when no compatible Steam template is available.
+
+On Windows, Steam saves are commonly under `Steam/userdata/<STEAMID64>/1446780/remote/win64_save`. The `1446780` directory is Monster Hunter Rise's Steam app ID. If Steam Cloud is enabled, turn it off temporarily while testing so it does not overwrite the converted files.
 
 ### Steam → Switch
 
