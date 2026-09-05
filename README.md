@@ -11,22 +11,23 @@ The CLI can inspect, verify, and convert the two core save files between Nintend
 
 ## Save Structure
 
-Monster Hunter Rise saves are directories containing several DSSS container files. The converter currently handles the gameplay save files only:
+Monster Hunter Rise saves are directories containing several DSSS container files. The converter handles the core gameplay files and the known album/photo containers:
 
 | File or pattern | Contents | Converter behavior |
 | --- | --- | --- |
 | `data00-1.bin` | System and global save data, such as settings and account-level state | Converted |
 | `data###Slot.bin` | Character/save-slot data, such as hunter progress, equipment, items, and quests | Converted |
-| `SS1_*`, `SS4_*`, `SS7_*` | Screenshot and album-related auxiliary data | Ignored |
+| `SS1_*`, `SS4_*`, `SS7_*` | Screenshot and album-related auxiliary data | Wrapper-converted |
 | Other files | Version- or feature-specific auxiliary files | Ignored unless explicitly supported |
 
 The two core file types have the same logical payload but different platform containers:
 
 - Nintendo Switch uses DSSS v2 with the `DEFLATE` flag (`0x08`). The payload is raw DEFLATE-compressed.
 - Steam uses DSSS v2 with the `CITRUS` flag (`0x04`). The payload is protected by SteamID64-dependent AES/ECC encryption and a Citrus Curve Index.
+- Known auxiliary files use an unencrypted wrapper: Switch uses no extra flag, while Steam uses `HAS_ID` (`0x02`) and stores the account identifier in the wrapper.
 - Both formats carry an outer MurmurHash3 integrity value. Steam files also contain per-block Citrus integrity checks.
 
-Conversion decompresses or decrypts the core payload, keeps that payload unchanged, then repacks it into the target platform container and regenerates the required integrity values. Steam account transfer changes the Citrus encryption identity; it does not convert the screenshot or album files. If those auxiliary files are needed, copy them separately and keep the original save directory as a backup.
+Conversion decompresses or decrypts the core payload, keeps that payload unchanged, then repacks it into the target platform container and regenerates the required integrity values. Known auxiliary files are rewrapped while preserving their filenames, slot numbers, and payload bytes. Steam account transfer updates the account identifier in both the Citrus core containers and the supported auxiliary wrappers. Files present only on one platform cannot be reconstructed; keep the original save directory as a backup.
 
 ## Usage
 
@@ -64,7 +65,7 @@ cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
   --target-reference /path/to/existing/win64_save
 ```
 
-The converter only rewrites the core `data00-1.bin` and `data###Slot.bin` files. Album and screenshot files such as `SS1_*`, `SS4_*`, and `SS7_*` are not part of the cross-platform save payload and are intentionally ignored. Use a new output directory and keep the original save as a backup; `--force` is required to reuse a non-empty output path.
+The converter rewrites the core `data00-1.bin` and `data###Slot.bin` files together with known `SS1_*`, `SS4_*`, and `SS7_*` files. Other files are intentionally left out. Use a new output directory and keep the original save as a backup; `--force` is required to reuse a non-empty output path.
 
 ## Development
 
