@@ -59,8 +59,17 @@ pub fn convert_path(
         fs::create_dir_all(parent)?;
     }
 
+    let mut options = options;
     let mut written = Vec::with_capacity(files.len());
     for file in files {
+        if file.platform == Platform::Steam && options.source_curve_index.is_none() {
+            let steamid64 =
+                options.source_steamid64.context("Steam source requires --source-steamid64")?;
+            options.source_curve_index =
+                Some(find_curve_index(&file.path, steamid64).with_context(|| {
+                    format!("could not detect source Curve Index from {}", file.path.display())
+                })?);
+        }
         let output_path = if output_is_directory {
             output.join(file.path.file_name().expect("discovered file has a name"))
         } else {
