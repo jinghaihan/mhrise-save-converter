@@ -1,0 +1,19 @@
+# Save structure
+
+Monster Hunter Rise saves are directories containing several DSSS container files. The converter currently handles the core gameplay files and known album/photo containers:
+
+| File or pattern | Contents | Handling |
+| --- | --- | --- |
+| `data00-1.bin` | System and global state | Converted with the platform schema |
+| `data###Slot.bin` | Hunter progress, equipment, items, and quests | Converted with the platform schema |
+| `SS1_*`, `SS4_*`, `SS7_*` | Album and screenshot data | Rewrapped while preserving the payload |
+| Other files | Version- or feature-specific data | Unsupported and omitted |
+
+The core formats share the DSSS v2 container but use different payload protection:
+
+- Switch uses raw DEFLATE (`DEFLATE`, `0x08`).
+- Steam uses Citrus encryption (`CITRUS`, `0x04`), which depends on SteamID64 and a Curve Index.
+- Known album/photo files use an unencrypted wrapper on Switch and a `HAS_ID` (`0x02`) wrapper on Steam.
+- Both formats contain an outer MurmurHash3 integrity value; Steam core files also contain Citrus block checks.
+
+Same-platform resigning preserves the logical payload and rebuilds the required container integrity values. Cross-platform conversion follows the destination class schema, copies matching source fields, and preserves or constructs destination-only fields. Use a new output directory and keep the original save as a backup; files outside the supported patterns cannot currently be reconstructed.
