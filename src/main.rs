@@ -160,6 +160,7 @@ fn convert(request: ConvertRequest) -> Result<()> {
             source_curve_index,
             target_curve_index,
         },
+        target_reference.as_deref(),
         force,
     )?;
     println!("Converted {} file(s):", written.len());

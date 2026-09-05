@@ -12,6 +12,8 @@ use crate::{
     crypto::Citrus,
     discover::{SaveFileKind, discover_save_files},
     format::{ChecksumStatus, DsssHeader, Platform, SaveFlags, checksum_status, parse_header},
+    payload::SavePayload,
+    translation::merge_onto_template,
 };
 
 const DSSS_HEADER_LEN: usize = 12;
@@ -37,6 +39,7 @@ pub fn convert_path(
     input: &Path,
     output: &Path,
     options: ConversionOptions,
+    target_reference: Option<&Path>,
     force: bool,
 ) -> Result<Vec<PathBuf>> {
     let files = discover_save_files(input)?;
@@ -87,7 +90,13 @@ pub fn convert_path(
             );
         }
         let converted = match file.kind {
-            SaveFileKind::Core => convert_bytes(&data, options),
+            SaveFileKind::Core => {
+                let target_template = target_reference
+                    .map(|reference| read_matching_reference(reference, &file.path))
+                    .transpose()?
+                    .flatten();
+                convert_bytes_with_template(&data, target_template.as_deref(), options)
+            }
             SaveFileKind::Auxiliary => {
                 convert_auxiliary_bytes(&data, options.target, options.target_steamid64)
             }
@@ -100,16 +109,71 @@ pub fn convert_path(
     Ok(written)
 }
 
+fn read_matching_reference(reference: &Path, source_file: &Path) -> Result<Option<Vec<u8>>> {
+    let reference_file = if reference.is_dir() {
+        reference.join(source_file.file_name().context("source save file has no name")?)
+    } else {
+        reference.to_path_buf()
+    };
+    if !reference_file.exists() {
+        return Ok(None);
+    }
+    fs::read(&reference_file)
+        .with_context(|| format!("could not read target template {}", reference_file.display()))
+        .map(Some)
+}
+
 pub fn convert_bytes(data: &[u8], options: ConversionOptions) -> Result<Vec<u8>> {
+    convert_bytes_with_template(data, None, options)
+}
+
+pub fn convert_bytes_with_template(
+    data: &[u8],
+    target_template: Option<&[u8]>,
+    options: ConversionOptions,
+) -> Result<Vec<u8>> {
     let header = parse_header(data).context("invalid source DSSS header")?;
     if !matches!(checksum_status(data)?, ChecksumStatus::Valid) {
         bail!("source save has an invalid checksum; refusing to convert it");
     }
     let source_platform = header.platform();
-    let payload =
+    let mut payload =
         unpack_payload(data, header, options.source_steamid64, options.source_curve_index)?;
+    if let Some(template) = target_template {
+        let target_header =
+            parse_header(template).context("invalid target-template DSSS header")?;
+        if target_header.platform() != target_platform(options.target) {
+            bail!(
+                "target template is {}, but requested output is {}",
+                target_header.platform(),
+                target_platform(options.target)
+            );
+        }
+        if header.platform() != target_header.platform() {
+            let target_payload = unpack_payload(
+                template,
+                target_header,
+                options.target_steamid64,
+                options.target_curve_index,
+            )?;
+            let source = SavePayload::parse(&payload).context("invalid source class stream")?;
+            let target = SavePayload::parse(&target_payload)
+                .context("invalid target-template class stream")?;
+            payload = merge_onto_template(&source, &target)
+                .0
+                .encode()
+                .context("could not encode translated class stream")?;
+        }
+    }
     pack_payload(&payload, options.target, options.target_steamid64, options.target_curve_index)
         .with_context(|| format!("cannot pack {} as target format", source_platform))
+}
+
+fn target_platform(target: TargetPlatform) -> Platform {
+    match target {
+        TargetPlatform::NintendoSwitch => Platform::NintendoSwitch,
+        TargetPlatform::Steam => Platform::Steam,
+    }
 }
 
 pub fn convert_auxiliary_bytes(
@@ -299,6 +363,7 @@ pub fn verify_file(path: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payload::{Class, Field, FieldValue, NativeClass, SavePayload};
 
     const TEST_STEAM_ID: u64 = 76_561_198_382_766_028;
 
@@ -372,5 +437,86 @@ mod tests {
         let roundtrip = convert_auxiliary_bytes(&steam, TargetPlatform::NintendoSwitch, None)
             .expect("Steam auxiliary conversion should succeed");
         assert_eq!(roundtrip, switch);
+    }
+
+    #[test]
+    fn cross_platform_conversion_uses_target_template_schema() {
+        let source_payload = SavePayload {
+            entries: vec![NativeClass {
+                native_hash: 1,
+                class: Class {
+                    hash: 10,
+                    fields: vec![Field {
+                        hash: 100,
+                        field_type: 8,
+                        value: FieldValue::Scalar { size: 4, bytes: 7u32.to_le_bytes().to_vec() },
+                    }],
+                },
+            }],
+        }
+        .encode()
+        .expect("source payload should encode");
+        let target_payload = SavePayload {
+            entries: vec![NativeClass {
+                native_hash: 1,
+                class: Class {
+                    hash: 10,
+                    fields: vec![
+                        Field {
+                            hash: 100,
+                            field_type: 8,
+                            value: FieldValue::Scalar {
+                                size: 4,
+                                bytes: 9u32.to_le_bytes().to_vec(),
+                            },
+                        },
+                        Field {
+                            hash: 101,
+                            field_type: 8,
+                            value: FieldValue::Scalar {
+                                size: 4,
+                                bytes: 11u32.to_le_bytes().to_vec(),
+                            },
+                        },
+                    ],
+                },
+            }],
+        }
+        .encode()
+        .expect("target payload should encode");
+        let source = pack_payload(&source_payload, TargetPlatform::NintendoSwitch, None, None)
+            .expect("Switch source should pack");
+        let target =
+            pack_payload(&target_payload, TargetPlatform::Steam, Some(TEST_STEAM_ID), Some(0))
+                .expect("Steam template should pack");
+
+        let converted = convert_bytes_with_template(
+            &source,
+            Some(&target),
+            ConversionOptions {
+                target: TargetPlatform::Steam,
+                source_steamid64: None,
+                target_steamid64: Some(TEST_STEAM_ID),
+                source_curve_index: None,
+                target_curve_index: Some(0),
+            },
+        )
+        .expect("template conversion should succeed");
+        let converted_header = parse_header(&converted).expect("converted header should parse");
+        let converted_payload =
+            unpack_payload(&converted, converted_header, Some(TEST_STEAM_ID), Some(0))
+                .expect("converted payload should decrypt");
+        let converted_payload =
+            SavePayload::parse(&converted_payload).expect("converted payload should parse");
+
+        assert_eq!(converted_payload.entries[0].class.fields.len(), 2);
+        assert_eq!(
+            converted_payload.entries[0].class.fields[0].value,
+            FieldValue::Scalar { size: 4, bytes: 7u32.to_le_bytes().to_vec() }
+        );
+        assert_eq!(
+            converted_payload.entries[0].class.fields[1].value,
+            FieldValue::Scalar { size: 4, bytes: 11u32.to_le_bytes().to_vec() }
+        );
     }
 }
