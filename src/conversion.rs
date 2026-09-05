@@ -10,6 +10,7 @@ use murmur3::murmur3_32;
 
 use crate::{
   crypto::Citrus,
+  defaults::steam_template_from_source,
   discover::{SaveFileKind, discover_save_files},
   format::{ChecksumStatus, DsssHeader, Platform, SaveFlags, checksum_status, parse_header},
   payload::SavePayload,
@@ -136,34 +137,38 @@ pub fn convert_bytes_with_template(
   let source_platform = header.platform();
   let mut payload =
     unpack_payload(data, header, options.source_steamid64, options.source_curve_index)?;
-  if let Some(template) = target_template {
-    let target_header = parse_header(template).context("invalid target-template DSSS header")?;
-    if target_header.platform() != target_platform(options.target) {
-      bail!(
-        "target template is {}, but requested output is {}",
-        target_header.platform(),
-        target_platform(options.target)
-      );
-    }
-    if header.platform() != target_header.platform() {
-      let target_payload = unpack_payload(
-        template,
-        target_header,
-        options.target_steamid64,
-        options.target_curve_index,
-      )?;
-      let source = SavePayload::parse_at_offset(&payload, class_stream_offset(header.platform()))
-        .context("invalid source class stream")?;
-      let target = SavePayload::parse_at_offset(
-        &target_payload,
-        class_stream_offset(target_header.platform()),
-      )
-      .context("invalid target-template class stream")?;
-      payload = merge_onto_template(&source, &target)
-        .0
-        .encode_at_offset(class_stream_offset(target_header.platform()))
-        .context("could not encode translated class stream")?;
-    }
+  let requested_platform = target_platform(options.target);
+  if header.platform() != requested_platform {
+    let source = SavePayload::parse_at_offset(&payload, class_stream_offset(header.platform()))
+      .context("invalid source class stream")?;
+    let target = match target_template {
+      Some(template) => {
+        let target_header =
+          parse_header(template).context("invalid target-template DSSS header")?;
+        if target_header.platform() != requested_platform {
+          bail!(
+            "target template is {}, but requested output is {}",
+            target_header.platform(),
+            requested_platform
+          );
+        }
+        let target_payload = unpack_payload(
+          template,
+          target_header,
+          options.target_steamid64,
+          options.target_curve_index,
+        )?;
+        SavePayload::parse_at_offset(&target_payload, class_stream_offset(target_header.platform()))
+          .context("invalid target-template class stream")?
+      }
+      None if requested_platform == Platform::Steam => steam_template_from_source(&source)
+        .context("could not construct the built-in Steam schema")?,
+      None => bail!("cross-platform conversion to Switch currently requires --target-reference"),
+    };
+    payload = merge_onto_template(&source, &target)
+      .0
+      .encode_at_offset(class_stream_offset(requested_platform))
+      .context("could not encode translated class stream")?;
   }
   pack_payload(&payload, options.target, options.target_steamid64, options.target_curve_index)
     .with_context(|| format!("cannot pack {} as target format", source_platform))
@@ -375,35 +380,22 @@ mod tests {
   const TEST_STEAM_ID: u64 = 76_561_198_382_766_028;
 
   #[test]
-  fn switch_steam_switch_roundtrip_preserves_payload() {
+  fn platform_containers_roundtrip_preserve_payload() {
     let payload = b"MHRise save payload used for a conversion round trip";
     let switch = pack_payload(payload, TargetPlatform::NintendoSwitch, None, None)
       .expect("Switch packing should succeed");
-    let steam = convert_bytes(
-      &switch,
-      ConversionOptions {
-        target: TargetPlatform::Steam,
-        source_steamid64: None,
-        target_steamid64: Some(TEST_STEAM_ID),
-        source_curve_index: None,
-        target_curve_index: Some(0),
-      },
-    )
-    .expect("Switch to Steam conversion should succeed");
-    let roundtrip = convert_bytes(
-      &steam,
-      ConversionOptions {
-        target: TargetPlatform::NintendoSwitch,
-        source_steamid64: Some(TEST_STEAM_ID),
-        target_steamid64: None,
-        source_curve_index: Some(0),
-        target_curve_index: None,
-      },
-    )
-    .expect("Steam to Switch conversion should succeed");
+    let steam = pack_payload(payload, TargetPlatform::Steam, Some(TEST_STEAM_ID), Some(0))
+      .expect("Steam packing should succeed");
 
-    assert_eq!(unpack_deflate(&roundtrip).expect("roundtrip should deflate"), payload);
-    assert!(matches!(checksum_status(&roundtrip), Ok(ChecksumStatus::Valid)));
+    assert_eq!(unpack_deflate(&switch).expect("Switch payload should deflate"), payload);
+    let steam_header = parse_header(&steam).expect("Steam header should parse");
+    assert_eq!(
+      unpack_payload(&steam, steam_header, Some(TEST_STEAM_ID), Some(0))
+        .expect("Steam payload should decrypt"),
+      payload
+    );
+    assert!(matches!(checksum_status(&switch), Ok(ChecksumStatus::Valid)));
+    assert!(matches!(checksum_status(&steam), Ok(ChecksumStatus::Valid)));
   }
 
   #[test]
