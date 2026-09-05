@@ -87,16 +87,16 @@ where
   }
 
   let mut options = request;
-  if options.target == TargetPlatform::Steam && options.target_curve_index.is_none() {
-    if let (Some(reference), Some(steamid64)) =
+  if options.target == TargetPlatform::Steam
+    && options.target_curve_index.is_none()
+    && let (Some(reference), Some(steamid64)) =
       (options.target_reference.as_deref(), options.target_steamid64)
-    {
-      let reference_file = reference_core_file(reference)?;
-      options.target_curve_index =
-        Some(find_curve_index(&reference_file, steamid64).with_context(|| {
-          format!("could not detect target Curve Index from {}", reference_file.display())
-        })?);
-    }
+  {
+    let reference_file = reference_core_file(reference)?;
+    options.target_curve_index =
+      Some(find_curve_index(&reference_file, steamid64).with_context(|| {
+        format!("could not detect target Curve Index from {}", reference_file.display())
+      })?);
   }
   let mut written = Vec::with_capacity(files.len());
   for file in files {
