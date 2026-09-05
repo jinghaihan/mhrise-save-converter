@@ -28,7 +28,7 @@ pub enum TargetPlatform {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ConversionOptions {
+pub struct ConversionRequest {
   pub target: TargetPlatform,
   pub source_steamid64: Option<u64>,
   pub target_steamid64: Option<u64>,
@@ -36,10 +36,12 @@ pub struct ConversionOptions {
   pub target_curve_index: Option<usize>,
 }
 
+pub type ConversionOptions = ConversionRequest;
+
 pub fn convert_path(
   input: &Path,
   output: &Path,
-  options: ConversionOptions,
+  request: ConversionRequest,
   target_reference: Option<&Path>,
   force: bool,
 ) -> Result<Vec<PathBuf>> {
@@ -63,7 +65,7 @@ pub fn convert_path(
     fs::create_dir_all(parent)?;
   }
 
-  let mut options = options;
+  let mut options = request;
   let mut written = Vec::with_capacity(files.len());
   for file in files {
     if file.kind == SaveFileKind::Core

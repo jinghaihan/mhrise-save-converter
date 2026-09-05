@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use mhrise_save_converter::{
-  conversion::{ConversionOptions, TargetPlatform, convert_path, find_curve_index, verify_file},
+  conversion::{ConversionRequest, TargetPlatform, convert_path, find_curve_index, verify_file},
   discover::{discover_core_files, discover_save_files},
 };
 
@@ -153,7 +153,7 @@ fn convert(request: ConvertRequest) -> Result<()> {
   let written = convert_path(
     &input,
     &output,
-    ConversionOptions {
+    ConversionRequest {
       target,
       source_steamid64,
       target_steamid64,
