@@ -104,6 +104,46 @@ pub fn convert_bytes(data: &[u8], options: ConversionOptions) -> Result<Vec<u8>>
         .with_context(|| format!("cannot pack {} as target format", source_platform))
 }
 
+pub fn convert_auxiliary_bytes(
+    data: &[u8],
+    target: TargetPlatform,
+    target_steamid64: Option<u64>,
+) -> Result<Vec<u8>> {
+    let header = parse_header(data).context("invalid auxiliary DSSS header")?;
+    if !matches!(checksum_status(data)?, ChecksumStatus::Valid) {
+        bail!("auxiliary save has an invalid checksum; refusing to convert it");
+    }
+
+    let source_flags = header.raw_flags;
+    let source_payload_offset = match source_flags {
+        0 => DSSS_HEADER_LEN,
+        value if value == SaveFlags::HAS_ID.bits() => align_up(DSSS_HEADER_LEN, 8) + 8,
+        value => bail!("unsupported auxiliary DSSS flags 0x{value:08x}"),
+    };
+    let payload_end =
+        data.len().checked_sub(FILE_HASH_LEN).context("auxiliary save is too small")?;
+    if payload_end < source_payload_offset {
+        bail!("auxiliary save payload exceeds file bounds");
+    }
+
+    let mut output = Vec::with_capacity(data.len() + 12);
+    output.extend_from_slice(b"DSSS");
+    output.extend_from_slice(&2u32.to_le_bytes());
+    match target {
+        TargetPlatform::NintendoSwitch => {
+            output.extend_from_slice(&SaveFlags::empty().bits().to_le_bytes());
+        }
+        TargetPlatform::Steam => {
+            output.extend_from_slice(&SaveFlags::HAS_ID.bits().to_le_bytes());
+            output.resize(align_up(output.len(), 8), 0);
+            let id = target_steamid64.context("Steam target requires --target-steamid64")?;
+            output.extend_from_slice(&(id & u32::MAX as u64).to_le_bytes());
+        }
+    }
+    output.extend_from_slice(&data[source_payload_offset..payload_end]);
+    finish_file(output)
+}
+
 pub fn find_curve_index(path: &Path, steamid64: u64) -> Result<usize> {
     let data = fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     let header = parse_header(&data).context("invalid target DSSS header")?;
@@ -209,6 +249,10 @@ fn pack_payload(
         }
     }
 
+    finish_file(output)
+}
+
+fn finish_file(mut output: Vec<u8>) -> Result<Vec<u8>> {
     output.resize(align_up(output.len(), 4), 0);
     let hash = murmur3_32(&mut std::io::Cursor::new(&output), 0xffff_ffff)?;
     output.extend_from_slice(&hash.to_le_bytes());
@@ -301,5 +345,24 @@ mod tests {
         .expect_err("invalid source checksum should be rejected");
 
         assert!(error.to_string().contains("invalid checksum"));
+    }
+
+    #[test]
+    fn auxiliary_wrapper_roundtrip_preserves_payload() {
+        let mut switch = Vec::from(&b"DSSS"[..]);
+        switch.extend_from_slice(&2u32.to_le_bytes());
+        switch.extend_from_slice(&SaveFlags::empty().bits().to_le_bytes());
+        switch.extend_from_slice(b"auxiliary payload with album data");
+        let switch = finish_file(switch).expect("Switch auxiliary fixture should be valid");
+        let steam_id = 76_561_198_382_766_028u64;
+
+        let steam = convert_auxiliary_bytes(&switch, TargetPlatform::Steam, Some(steam_id))
+            .expect("Switch auxiliary conversion should succeed");
+        assert_eq!(&steam[8..12], &SaveFlags::HAS_ID.bits().to_le_bytes());
+        assert_eq!(&steam[16..24], &(steam_id & u32::MAX as u64).to_le_bytes());
+
+        let roundtrip = convert_auxiliary_bytes(&steam, TargetPlatform::NintendoSwitch, None)
+            .expect("Steam auxiliary conversion should succeed");
+        assert_eq!(roundtrip, switch);
     }
 }
