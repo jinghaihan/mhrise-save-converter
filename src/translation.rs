@@ -1,6 +1,13 @@
 use crate::payload::{Array, ArrayValue, Class, Field, FieldValue, NativeClass, SavePayload};
 
 const SAVE_FILE_DETAIL_NATIVE_HASH: u32 = 0x85e9_04c1;
+const HUNTER_RECORD_CLASS_HASH: u32 = 0xaf6e_a643;
+const NETWORK_SAVE_DATA_CLASS_HASH: u32 = 0xfdb8_053d;
+
+const NETWORK_UNIQUE_ID_FIELD_HASH: u32 = 0x0737_8f29;
+const NSA_ID_FIELD_HASH: u32 = 0xcce8_505f;
+const NET_ERROR_BAN_QUEST_LIST_FIELD_HASH: u32 = 0xf29d_836b;
+const UNIQUE_ID_BIN_FIELD_HASH: u32 = 0xa291_e6f1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MergeReport {
@@ -64,6 +71,11 @@ fn merge_class(source: &Class, target: &Class, report: &mut MergeReport) -> Clas
     .fields
     .iter()
     .map(|target_field| {
+      if preserves_target_platform_identity(target.hash, target_field.hash) {
+        report.preserved_target_fields += 1;
+        return target_field.clone();
+      }
+
       let source_field = source.fields.iter().find(|source_field| {
         source_field.hash == target_field.hash && source_field.field_type == target_field.field_type
       });
@@ -85,6 +97,16 @@ fn merge_class(source: &Class, target: &Class, report: &mut MergeReport) -> Clas
     .collect();
 
   Class { hash: target.hash, fields }
+}
+
+fn preserves_target_platform_identity(class_hash: u32, field_hash: u32) -> bool {
+  matches!(
+    (class_hash, field_hash),
+    (
+      HUNTER_RECORD_CLASS_HASH,
+      NETWORK_UNIQUE_ID_FIELD_HASH | NSA_ID_FIELD_HASH | NET_ERROR_BAN_QUEST_LIST_FIELD_HASH
+    ) | (NETWORK_SAVE_DATA_CLASS_HASH, UNIQUE_ID_BIN_FIELD_HASH)
+  )
 }
 
 fn merge_value(source: &FieldValue, target: &FieldValue, report: &mut MergeReport) -> FieldValue {
@@ -207,5 +229,36 @@ mod tests {
     assert_eq!(merged, target);
     assert_eq!(report.preserved_target_top_level_classes, 1);
     assert_eq!(report.copied_source_fields, 0);
+  }
+
+  #[test]
+  fn preserves_target_platform_identity_fields() {
+    let platform_fields = [
+      (HUNTER_RECORD_CLASS_HASH, NETWORK_UNIQUE_ID_FIELD_HASH),
+      (HUNTER_RECORD_CLASS_HASH, NSA_ID_FIELD_HASH),
+      (HUNTER_RECORD_CLASS_HASH, NET_ERROR_BAN_QUEST_LIST_FIELD_HASH),
+      (NETWORK_SAVE_DATA_CLASS_HASH, UNIQUE_ID_BIN_FIELD_HASH),
+    ];
+
+    for (class_hash, field_hash) in platform_fields {
+      let source = SavePayload {
+        entries: vec![NativeClass {
+          native_hash: 1,
+          class: Class { hash: class_hash, fields: vec![field(field_hash, 1)] },
+        }],
+      };
+      let target = SavePayload {
+        entries: vec![NativeClass {
+          native_hash: 1,
+          class: Class { hash: class_hash, fields: vec![field(field_hash, 9)] },
+        }],
+      };
+
+      let (merged, report) = merge_onto_template(&source, &target);
+
+      assert_eq!(merged, target);
+      assert_eq!(report.copied_source_fields, 0);
+      assert_eq!(report.preserved_target_fields, 1);
+    }
   }
 }
