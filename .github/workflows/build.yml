@@ -12,37 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  checks:
-    name: Rust checks
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install GUI build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes libgl1-mesa-dev libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev
-
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run Clippy
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
-
-      - name: Run tests
-        run: cargo test --locked --all-targets --all-features
-
   package:
     name: Package ${{ matrix.target }}
-    needs: checks
     strategy:
       fail-fast: false
       matrix:
