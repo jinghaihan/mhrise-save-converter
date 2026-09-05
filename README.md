@@ -1,9 +1,9 @@
-> [!WARNING]
-> **Test status:** Nintendo Switch → Steam conversion has been tested and confirmed working. Steam → Nintendo Switch and Steam → Steam have not been tested yet. Always back up your saves first.
-
 # MHRise Save Converter
 
 Native GUI and library tooling for converting *Monster Hunter Rise* saves between Nintendo Switch and Steam formats.
+
+> [!WARNING]
+> **Test status:** Nintendo Switch → Steam conversion has been tested and confirmed working. Steam → Nintendo Switch and Steam → Steam have not been tested yet. Always back up your saves first.
 
 ## GUI
 
@@ -14,10 +14,6 @@ cargo run --release --bin mhrise-save-gui
 ```
 
 Choose a source save, a new output directory, and the target platform. For Steam conversion, enter the relevant SteamID64 and preferably select an existing target save as the template; the app can read the destination Curve Index automatically. The source and template are never modified. The GUI performs a preflight check, converts in the background, shows per-file progress, and can open the output folder.
-
-## Status
-
-Nintendo Switch → Steam has been tested in-game and is working. Steam → Nintendo Switch and Steam → Steam are implemented but still need in-game validation. The converter handles the core save files and known album/photo containers; unsupported auxiliary files are left out.
 
 ## Steam inputs
 
