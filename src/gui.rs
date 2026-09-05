@@ -308,3 +308,40 @@ impl eframe::App for GuiApp {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn default_request_targets_steam_without_optional_values() {
+    let app = GuiApp::default();
+    let request = app.request().expect("default GUI state should be parseable");
+
+    assert_eq!(request.target, TargetPlatform::Steam);
+    assert_eq!(request.source_steamid64, None);
+    assert_eq!(request.target_reference, None);
+    assert!(!request.force);
+  }
+
+  #[test]
+  fn request_rejects_non_numeric_steam_id() {
+    let app = GuiApp { target_steamid64: "not-a-steamid".to_owned(), ..GuiApp::default() };
+
+    let error = app.request().expect_err("invalid SteamID64 should be rejected");
+
+    assert_eq!(error, "Target SteamID64 must be a number");
+  }
+
+  #[test]
+  fn paths_require_source_and_output() {
+    let app = GuiApp::default();
+    assert_eq!(
+      app.paths().expect_err("source is required"),
+      "Choose a source save directory first."
+    );
+
+    let app = GuiApp { source: "/tmp/source".to_owned(), ..GuiApp::default() };
+    assert_eq!(app.paths().expect_err("output is required"), "Choose an output directory first.");
+  }
+}
