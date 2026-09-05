@@ -40,12 +40,33 @@ pub struct ConversionRequest {
 
 pub type ConversionOptions = ConversionRequest;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversionProgress {
+  pub completed: usize,
+  pub total: usize,
+  pub current_file: PathBuf,
+  pub kind: SaveFileKind,
+}
+
 pub fn convert_path(
   input: &Path,
   output: &Path,
   request: ConversionRequest,
 ) -> Result<Vec<PathBuf>> {
+  convert_path_with_progress(input, output, request, |_| {})
+}
+
+pub fn convert_path_with_progress<F>(
+  input: &Path,
+  output: &Path,
+  request: ConversionRequest,
+  mut on_progress: F,
+) -> Result<Vec<PathBuf>>
+where
+  F: FnMut(ConversionProgress),
+{
   let files = discover_save_files(input)?;
+  let total = files.len();
   let output_is_directory = input.is_dir();
   if output_is_directory {
     if output.exists() && !request.force {
@@ -107,6 +128,12 @@ pub fn convert_path(
     fs::write(&output_path, converted)
       .with_context(|| format!("could not write {}", output_path.display()))?;
     written.push(output_path);
+    on_progress(ConversionProgress {
+      completed: written.len(),
+      total,
+      current_file: file.path,
+      kind: file.kind,
+    });
   }
   Ok(written)
 }
