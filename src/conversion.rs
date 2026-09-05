@@ -87,6 +87,17 @@ where
   }
 
   let mut options = request;
+  if options.target == TargetPlatform::Steam && options.target_curve_index.is_none() {
+    if let (Some(reference), Some(steamid64)) =
+      (options.target_reference.as_deref(), options.target_steamid64)
+    {
+      let reference_file = reference_core_file(reference)?;
+      options.target_curve_index =
+        Some(find_curve_index(&reference_file, steamid64).with_context(|| {
+          format!("could not detect target Curve Index from {}", reference_file.display())
+        })?);
+    }
+  }
   let mut written = Vec::with_capacity(files.len());
   for file in files {
     if file.kind == SaveFileKind::Core
@@ -292,6 +303,20 @@ fn read_matching_reference(reference: &Path, source_file: &Path) -> Result<Optio
   fs::read(&reference_file)
     .with_context(|| format!("could not read target template {}", reference_file.display()))
     .map(Some)
+}
+
+fn reference_core_file(reference: &Path) -> Result<PathBuf> {
+  if reference.is_file() {
+    return Ok(reference.to_path_buf());
+  }
+  let files = discover_save_files(reference)?;
+  files
+    .iter()
+    .filter(|file| file.kind == SaveFileKind::Core)
+    .find(|file| file.path.file_name().is_some_and(|name| name == "data001Slot.bin"))
+    .or_else(|| files.iter().find(|file| file.kind == SaveFileKind::Core))
+    .map(|file| file.path.clone())
+    .context("target reference contains no usable core save file")
 }
 
 pub fn convert_bytes(data: &[u8], options: ConversionOptions) -> Result<Vec<u8>> {
