@@ -3,11 +3,11 @@
 
 # MHRise Save Converter
 
-Cross-platform save conversion and Steam-account resigning for *Monster Hunter Rise*, targeting Nintendo Switch and Steam saves.
+Save-container tooling and experimental cross-platform conversion research for *Monster Hunter Rise*, targeting Nintendo Switch and Steam saves.
 
 ## Status
 
-The CLI can inspect, verify, and convert the two core save files between Nintendo Switch and Steam. Steam conversion supports account resigning when you provide the destination SteamID64 and Curve Index.
+Steam-to-Steam account resigning is implemented at the DSSS/Citrus container layer and still requires broader in-game validation. Nintendo Switch-to-Steam and Steam-to-Switch conversion are not complete: the platforms share most of their serialized class schema, but platform-specific classes and fields must be translated before the result is game-compatible.
 
 ## Save Structure
 
@@ -15,19 +15,19 @@ Monster Hunter Rise saves are directories containing several DSSS container file
 
 | File or pattern | Contents | Converter behavior |
 | --- | --- | --- |
-| `data00-1.bin` | System and global save data, such as settings and account-level state | Converted |
-| `data###Slot.bin` | Character/save-slot data, such as hunter progress, equipment, items, and quests | Converted |
-| `SS1_*`, `SS4_*`, `SS7_*` | Screenshot and album-related auxiliary data | Wrapper-converted |
+| `data00-1.bin` | System and global save data, such as settings and account-level state | Container conversion implemented; cross-platform schema translation is WIP |
+| `data###Slot.bin` | Character/save-slot data, such as hunter progress, equipment, items, and quests | Container conversion implemented; cross-platform schema translation is WIP |
+| `SS1_*`, `SS4_*`, `SS7_*` | Screenshot and album-related auxiliary data | Wrapper conversion implemented; in-game cross-platform validation is pending |
 | Other files | Version- or feature-specific auxiliary files | Ignored unless explicitly supported |
 
-The two core file types have the same logical payload but different platform containers:
+The two core file types use related logical payloads and different platform containers:
 
 - Nintendo Switch uses DSSS v2 with the `DEFLATE` flag (`0x08`). The payload is raw DEFLATE-compressed.
 - Steam uses DSSS v2 with the `CITRUS` flag (`0x04`). The payload is protected by SteamID64-dependent AES/ECC encryption and a Citrus Curve Index.
 - Known auxiliary files use an unencrypted wrapper: Switch uses no extra flag, while Steam uses `HAS_ID` (`0x02`) and stores the account identifier in the wrapper.
 - Both formats carry an outer MurmurHash3 integrity value. Steam files also contain per-block Citrus integrity checks.
 
-Conversion decompresses or decrypts the core payload, keeps that payload unchanged, then repacks it into the target platform container and regenerates the required integrity values. Known auxiliary files are rewrapped while preserving their filenames, slot numbers, and payload bytes. Steam account transfer updates the account identifier in both the Citrus core containers and the supported auxiliary wrappers. Files present only on one platform cannot be reconstructed; keep the original save directory as a backup.
+Container conversion decompresses or decrypts the core payload, keeps that payload unchanged, then repacks it into the target platform container and regenerates the required integrity values. This is sufficient for Steam-to-Steam resigning but not for cross-platform conversion. A compatible cross-platform result must also preserve or construct destination-only classes and fields. Known auxiliary files are rewrapped while preserving their filenames, slot numbers, and payload bytes. Files present only on one platform cannot be reconstructed; keep the original save directory as a backup.
 
 ## Usage
 
@@ -40,6 +40,9 @@ The inspector identifies core save files, platform flags, and file-integrity che
 
 ### Switch → Steam
 
+> [!CAUTION]
+> This path currently performs container conversion only. Its output is not expected to load in the game until schema translation is implemented.
+
 ```bash
 cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
   --to steam \
@@ -48,6 +51,9 @@ cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
 ```
 
 ### Steam → Switch
+
+> [!CAUTION]
+> This path currently performs container conversion only. Its output is not expected to load in the game until schema translation is implemented.
 
 ```bash
 cargo run -- convert /path/to/win64_save /tmp/mhrise-switch \
