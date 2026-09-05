@@ -230,18 +230,18 @@ impl Citrus {
 
     // for completeness, just do the whole thang until you find one that works
     pub fn brute_force_find_params(&self, buf: &[u8], decrypted_len: usize) -> Option<CurveParams> {
+        if !Self::valid_payload_layout(buf, decrypted_len) {
+            return None;
+        }
         let num_blocks = buf.len() / Self::BLOCK_SIZE;
+        if num_blocks == 0 {
+            return None;
+        }
         let mut key = [0u8; 16];
         let mut iv = [0u8; 16];
         let mut ecc_keys = [0u8; Self::ENC_KEYS_SIZE];
         let mut dec_buf = [0u8; Self::ENC_DATA_SIZE];
         let block = &buf[..Self::BLOCK_SIZE];
-
-        println!(
-            "[INFO] Brute forcing: decrypted_len: {decrypted_len:x}, num_blocks: {num_blocks}, buflen {:x}",
-            buf.len()
-        );
-        //println!(" {:x}", block.len());
 
         // Decrypt the ECC encrypted keys
         key.copy_from_slice(&block[0..16]);
@@ -253,22 +253,16 @@ impl Citrus {
         // if the curve params are unset try to brute force
         for curve in &CURVES {
             let curve_params = CurveParams::from(curve);
-            let (key, iv) = self.ecc_decrypt_keys(&ecc_keys, &curve_params)?;
-            //let dec_buf = &mut decrypted[decrypted_bytes..decrypted_bytes + block_size];
+            let Some((key, iv)) = self.ecc_decrypt_keys(&ecc_keys, &curve_params) else {
+                continue;
+            };
             // when decrypting, the blocks are always padded to the 0x40000 length i think
             dec_buf.copy_from_slice(
                 &block[32 + Self::ENC_KEYS_SIZE..32 + Self::ENC_KEYS_SIZE + Self::ENC_DATA_SIZE],
             );
             Self::aes_decrypt(&mut dec_buf, key, iv);
-            //println!("{}, {:?}", curve.index, &dec_buf[0..32]);
-            /*if &dec_buf[5..8] == &[0u8; 3] {
-                println!("[INFO] Found params at index {}", curve_params.index);
-                return Some(curve_params)
-            }*/
-            // idk how much this actually works, could probably lower it to like 10%
             let num_zeros = dec_buf.iter().filter(|&&b| b == 0).count();
             if num_zeros > dec_buf.len() / 2 {
-                println!("[INFO] Brute Force: Found params at index {}", curve_params.index);
                 return Some(curve_params);
             }
         }
@@ -277,6 +271,9 @@ impl Citrus {
 
     // could maybe also add something to change the buf in place
     pub fn decrypt(&self, buf: &[u8], decrypted_len: usize) -> Option<Vec<u8>> {
+        if !Self::valid_payload_layout(buf, decrypted_len) {
+            return None;
+        }
         let num_blocks = buf.len() / Self::BLOCK_SIZE;
         let mut decrypted = vec![0u8; decrypted_len];
         let mut offset = 0;
@@ -286,22 +283,15 @@ impl Citrus {
         let mut ecc_keys = [0u8; Self::ENC_KEYS_SIZE];
         let curve_params = self
             .param_index
-            .map(|i| CurveParams::from(&CURVES[i]))
+            .and_then(|i| CURVES.get(i).map(CurveParams::from))
             .or_else(|| self.brute_force_find_params(buf, decrypted_len))?;
 
-        println!(
-            "decrypted_len: {decrypted_len:x}, num_blocks: {num_blocks}, buflen {:x}",
-            buf.len()
-        );
         for i in 0..num_blocks {
             let mut dec_buf = [0u8; Self::ENC_DATA_SIZE];
-            //println!("block: {i}");
             let block = &buf[offset..offset + Self::BLOCK_SIZE];
-            //println!(" {:x}", block.len());
             // Decrypt the ECC encrypted keys
             key.copy_from_slice(&block[0..16]);
             iv.copy_from_slice(&block[16..32]);
-            //println!("key={}, iv={}", hex::encode(key), hex::encode(iv));
             ecc_keys.copy_from_slice(&block[32..32 + Self::ENC_KEYS_SIZE]);
             Self::aes_decrypt(&mut ecc_keys, key, iv);
 
@@ -309,14 +299,13 @@ impl Citrus {
             // if the curve params are unset try to brute force
             let (real_key, real_iv) = self.ecc_decrypt_keys(&ecc_keys, &curve_params)?;
             let block_size = if i == num_blocks - 1 {
-                decrypted_len - decrypted_bytes
+                decrypted_len.checked_sub(decrypted_bytes)?
             } else {
                 Self::ENC_DATA_SIZE
             };
             //let dec_buf = &mut decrypted[decrypted_bytes..decrypted_bytes + block_size];
             // when decrypting, the blocks are always padded to the 0x40000 length i think
 
-            // this AES should decrypted to a new buffer i think instead of modifying the old one?
             dec_buf.copy_from_slice(
                 &block[32 + Self::ENC_KEYS_SIZE..32 + Self::ENC_KEYS_SIZE + Self::ENC_DATA_SIZE],
             );
@@ -342,17 +331,7 @@ impl Citrus {
             let target_checksum = &block[0x40220..0x40240];
 
             if checksum != target_checksum {
-                eprintln!(
-                    "[ERROR] Citrus Checksum not equal on block {i}, checksum={}, target={}",
-                    hex::encode(checksum),
-                    hex::encode(target_checksum)
-                );
-            } else {
-                println!(
-                    "[INFO] Citrus Checksum equal on block {i}, checksum={}, target={}",
-                    hex::encode(checksum),
-                    hex::encode(target_checksum)
-                );
+                return None;
             }
 
             offset += Self::BLOCK_SIZE;
@@ -372,13 +351,11 @@ impl Citrus {
         // TODO: for completeness, at least read the block, maybe store it in the save to copy it
         // over to a new one?
         // also check the hash
-        println!("[INFO] Citrus: total decrypted_bytes: {decrypted_bytes:x}, offset: {offset:x}");
-        ////let _ = std::fs::write("./outputs/decrypted.bin", &decrypted);
         Some(decrypted)
     }
 
     pub fn encrypt(&self, buf: &[u8]) -> Option<Vec<u8>> {
-        let params = self.param_index.map(|i| CurveParams::from(&CURVES[i]))?;
+        let params = self.param_index.and_then(|i| CURVES.get(i).map(CurveParams::from))?;
         let pub_key = self.public_key(&params)?;
 
         let num_blocks = buf.len().div_ceil(Self::ENC_DATA_SIZE);
@@ -388,8 +365,7 @@ impl Citrus {
         let mut offset = 0;
         let mut pt_offset = 0;
 
-        for i in 0..num_blocks {
-            println!("[INFO] Encrypting Block {i}");
+        for _ in 0..num_blocks {
             let block = &mut out[offset..offset + Self::BLOCK_SIZE];
             let key: [u8; 16] = rand::random();
             let iv: [u8; 16] = rand::random();
@@ -429,6 +405,23 @@ impl Citrus {
 
         Some(out)
     }
+
+    fn valid_payload_layout(buf: &[u8], decrypted_len: usize) -> bool {
+        let Some(encrypted_len) = buf.len().checked_sub(0x1000) else {
+            return false;
+        };
+        if encrypted_len % Self::BLOCK_SIZE != 0 {
+            return false;
+        }
+
+        let num_blocks = encrypted_len / Self::BLOCK_SIZE;
+        if num_blocks == 0 {
+            return decrypted_len == 0;
+        }
+
+        let max_len = num_blocks.saturating_mul(Self::ENC_DATA_SIZE);
+        decrypted_len > (num_blocks - 1) * Self::ENC_DATA_SIZE && decrypted_len <= max_len
+    }
 }
 
 #[cfg(test)]
@@ -455,14 +448,8 @@ mod tests {
 
         let real_key: [u8; 16] = rand::random();
         let real_iv: [u8; 16] = rand::random();
-        println!("real_key={}", hex::encode(real_key));
-        println!("real_iv={}", hex::encode(real_iv));
-
         let ecc_keys = citrus.ecc_encrypt_keys(real_key, real_iv, pub_key, &params).unwrap();
         let (dec_key, dec_iv) = citrus.ecc_decrypt_keys(&ecc_keys, &params).unwrap();
-
-        println!("dec_key={}", hex::encode(dec_key));
-        println!("dec_iv={}", hex::encode(dec_iv));
 
         assert_eq!(real_key, dec_key, "ECC key roundtrip failed");
         assert_eq!(real_iv, dec_iv, "ECC iv roundtrip failed");
@@ -477,6 +464,21 @@ mod tests {
         // pass plaintext.len() as decrypted_len
         let decrypted = citrus.decrypt(&encrypted, plaintext.len()).unwrap();
         assert_eq!(plaintext, decrypted, "Full roundtrip failed");
+    }
+
+    #[test]
+    fn rejects_wrong_curve_index() {
+        let plaintext = vec![0x42u8; 1024];
+        let encrypted = Citrus::new(12345678, Some(0)).encrypt(&plaintext).unwrap();
+        assert!(Citrus::new(12345678, Some(1)).decrypt(&encrypted, plaintext.len()).is_none());
+    }
+
+    #[test]
+    fn detects_curve_index_when_omitted() {
+        let plaintext = vec![0x42u8; 1024];
+        let encrypted = Citrus::new(12345678, Some(0)).encrypt(&plaintext).unwrap();
+        let decrypted = Citrus::new(12345678, None).decrypt(&encrypted, plaintext.len()).unwrap();
+        assert_eq!(plaintext, decrypted, "Curve detection roundtrip failed");
     }
 }
 
