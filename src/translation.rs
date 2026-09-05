@@ -2,12 +2,19 @@ use crate::payload::{Array, ArrayValue, Class, Field, FieldValue, NativeClass, S
 
 const SAVE_FILE_DETAIL_NATIVE_HASH: u32 = 0x85e9_04c1;
 const SNAPSHOT_SAVE_DATA_NATIVE_HASH: u32 = 0x1322_883a;
+const DLC_HUNTER_SAVE_NATIVE_HASH: u32 = 0x1f61_3294;
+const EXTERNAL_DL_ITEM_PACK_NATIVE_HASH: u32 = 0xa812_38c6;
+
+const GUILD_CARD_DATA_CLASS_HASH: u32 = 0x4454_1321;
 const HUNTER_RECORD_CLASS_HASH: u32 = 0xaf6e_a643;
 const NETWORK_SAVE_DATA_CLASS_HASH: u32 = 0xfdb8_053d;
+const SYSTEM_SAVE_DATA_CLASS_HASH: u32 = 0x5766_f30b;
 
+const GOOD_FOLLOWER_DATA_LIST_FIELD_HASH: u32 = 0xb385_b976;
 const NETWORK_UNIQUE_ID_FIELD_HASH: u32 = 0x0737_8f29;
 const NSA_ID_FIELD_HASH: u32 = 0xcce8_505f;
 const NET_ERROR_BAN_QUEST_LIST_FIELD_HASH: u32 = 0xf29d_836b;
+const UNIQUE_ID_BYTE_ARRAY_FIELD_HASH: u32 = 0x9bbc_a62b;
 const UNIQUE_ID_BIN_FIELD_HASH: u32 = 0xa291_e6f1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -44,7 +51,13 @@ fn merge_top_level(
   target: &NativeClass,
   report: &mut MergeReport,
 ) -> NativeClass {
-  if matches!(target.native_hash, SAVE_FILE_DETAIL_NATIVE_HASH | SNAPSHOT_SAVE_DATA_NATIVE_HASH) {
+  if matches!(
+    target.native_hash,
+    SAVE_FILE_DETAIL_NATIVE_HASH
+      | SNAPSHOT_SAVE_DATA_NATIVE_HASH
+      | DLC_HUNTER_SAVE_NATIVE_HASH
+      | EXTERNAL_DL_ITEM_PACK_NATIVE_HASH
+  ) {
     report.preserved_target_top_level_classes += 1;
     return target.clone();
   }
@@ -72,7 +85,7 @@ fn merge_class(source: &Class, target: &Class, report: &mut MergeReport) -> Clas
     .fields
     .iter()
     .map(|target_field| {
-      if preserves_target_platform_identity(target.hash, target_field.hash) {
+      if preserves_target_platform_state(target.hash, target_field.hash) {
         report.preserved_target_fields += 1;
         return target_field.clone();
       }
@@ -100,13 +113,16 @@ fn merge_class(source: &Class, target: &Class, report: &mut MergeReport) -> Clas
   Class { hash: target.hash, fields }
 }
 
-fn preserves_target_platform_identity(class_hash: u32, field_hash: u32) -> bool {
+fn preserves_target_platform_state(class_hash: u32, field_hash: u32) -> bool {
   matches!(
     (class_hash, field_hash),
-    (
-      HUNTER_RECORD_CLASS_HASH,
-      NETWORK_UNIQUE_ID_FIELD_HASH | NSA_ID_FIELD_HASH | NET_ERROR_BAN_QUEST_LIST_FIELD_HASH
-    ) | (NETWORK_SAVE_DATA_CLASS_HASH, UNIQUE_ID_BIN_FIELD_HASH)
+    (GUILD_CARD_DATA_CLASS_HASH, UNIQUE_ID_BYTE_ARRAY_FIELD_HASH | NSA_ID_FIELD_HASH)
+      | (
+        HUNTER_RECORD_CLASS_HASH,
+        NETWORK_UNIQUE_ID_FIELD_HASH | NSA_ID_FIELD_HASH | NET_ERROR_BAN_QUEST_LIST_FIELD_HASH
+      )
+      | (NETWORK_SAVE_DATA_CLASS_HASH, UNIQUE_ID_BIN_FIELD_HASH)
+      | (SYSTEM_SAVE_DATA_CLASS_HASH, GOOD_FOLLOWER_DATA_LIST_FIELD_HASH)
   )
 }
 
@@ -255,12 +271,39 @@ mod tests {
   }
 
   #[test]
+  fn preserves_target_account_bound_top_level_state() {
+    for native_hash in [DLC_HUNTER_SAVE_NATIVE_HASH, EXTERNAL_DL_ITEM_PACK_NATIVE_HASH] {
+      let source = SavePayload {
+        entries: vec![NativeClass {
+          native_hash,
+          class: Class { hash: 10, fields: vec![field(100, 1)] },
+        }],
+      };
+      let target = SavePayload {
+        entries: vec![NativeClass {
+          native_hash,
+          class: Class { hash: 10, fields: vec![field(100, 9)] },
+        }],
+      };
+
+      let (merged, report) = merge_onto_template(&source, &target);
+
+      assert_eq!(merged, target);
+      assert_eq!(report.preserved_target_top_level_classes, 1);
+      assert_eq!(report.copied_source_fields, 0);
+    }
+  }
+
+  #[test]
   fn preserves_target_platform_identity_fields() {
     let platform_fields = [
+      (GUILD_CARD_DATA_CLASS_HASH, UNIQUE_ID_BYTE_ARRAY_FIELD_HASH),
+      (GUILD_CARD_DATA_CLASS_HASH, NSA_ID_FIELD_HASH),
       (HUNTER_RECORD_CLASS_HASH, NETWORK_UNIQUE_ID_FIELD_HASH),
       (HUNTER_RECORD_CLASS_HASH, NSA_ID_FIELD_HASH),
       (HUNTER_RECORD_CLASS_HASH, NET_ERROR_BAN_QUEST_LIST_FIELD_HASH),
       (NETWORK_SAVE_DATA_CLASS_HASH, UNIQUE_ID_BIN_FIELD_HASH),
+      (SYSTEM_SAVE_DATA_CLASS_HASH, GOOD_FOLLOWER_DATA_LIST_FIELD_HASH),
     ];
 
     for (class_hash, field_hash) in platform_fields {
