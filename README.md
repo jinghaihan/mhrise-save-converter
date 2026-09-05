@@ -77,6 +77,16 @@ The converter rewrites the core `data00-1.bin` and `data###Slot.bin` files toget
 > [!IMPORTANT]
 > Successful parsing and checksum verification only prove structural validity. The game is the final compatibility test; disable Steam Cloud and test with backed-up local saves first.
 
+### Graphical interface
+
+Launch the native GUI with:
+
+```bash
+cargo run --release --bin mhrise-save-gui
+```
+
+Choose the source and a new output directory, select the target platform, and optionally choose a target save as the schema/template reference. The GUI runs the same preflight checks as the CLI, converts in a background worker, reports per-file progress, and can open the completed output directory. The source and template directories are never modified.
+
 ## Development
 
 ```bash
@@ -84,6 +94,17 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
+
+Rust formatting uses two-space indentation as configured in `rustfmt.toml`. Every push and pull request runs formatting, Clippy, tests, and release builds for Linux, macOS, and Windows. The build workflow uploads platform archives and SHA-256 files as workflow artifacts.
+
+To publish a release from a clean, up-to-date `main` branch, use the release helper. The `--current` form is useful when the version in `Cargo.toml` is already the intended version:
+
+```bash
+python3 tools/release.py --current --yes   # publishes v0.1.0 for this release
+python3 tools/release.py --bump patch      # interactively publishes the next patch release
+```
+
+Pushing a `v*` tag starts the release workflow, which rebuilds all three platforms, verifies SHA-256 checksums, and creates the GitHub Release with the archives attached.
 
 ## Credits
 
