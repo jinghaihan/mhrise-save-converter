@@ -87,6 +87,11 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
       - name: Verify checksums
         shell: bash
         run: |
@@ -94,7 +99,26 @@ jobs:
             (cd dist && sha256sum -c "$(basename "$checksum")")
           done
 
-      - name: Create GitHub Release
+      - name: Generate release notes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npx changelogithub
+
+      - name: Upload release files
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes dist/*
+        run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+
+      - name: Verify downloadable release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir release-download
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-download
+          for checksum in dist/*.sha256; do
+            archive_name="$(basename "$checksum" .sha256)"
+            expected_sha="$(awk '{print $1}' "$checksum")"
+            actual_sha="$(sha256sum "release-download/$archive_name" | awk '{print $1}')"
+            test "$actual_sha" = "$expected_sha"
+          done
