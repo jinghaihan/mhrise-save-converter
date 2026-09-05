@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use mhrise_save_converter::{
     conversion::{ConversionOptions, TargetPlatform, convert_path, find_curve_index, verify_file},
-    discover::discover_core_files,
+    discover::{discover_core_files, discover_save_files},
 };
 
 #[derive(Debug, Parser)]
@@ -21,7 +21,7 @@ enum Command {
         /// A save file or a win64_save directory.
         path: PathBuf,
     },
-    /// Convert core save files into another platform format.
+    /// Convert the complete supported save bundle into another platform format.
     Convert {
         /// A save file or a win64_save directory.
         input: PathBuf,
@@ -49,7 +49,7 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Verify outer file checksums for core save files.
+    /// Verify outer file checksums for all supported save files.
     Verify {
         /// A save file or a win64_save directory.
         path: PathBuf,
@@ -106,13 +106,16 @@ fn main() -> Result<()> {
 }
 
 fn inspect(path: &Path) -> Result<()> {
-    let files = discover_core_files(path)?;
+    let files = discover_save_files(path)?;
     println!("Input: {}", path.display());
-    println!("Core files: {}", files.len());
+    println!("Save files: {}", files.len());
 
     for file in files {
         let name = file.path.file_name().and_then(|value| value.to_str()).unwrap_or("<unknown>");
-        println!("- {name}: platform={}, checksum={}", file.platform, file.checksum);
+        println!(
+            "- {name}: kind={}, platform={}, checksum={}",
+            file.kind, file.platform, file.checksum
+        );
     }
 
     Ok(())
@@ -180,7 +183,7 @@ fn reference_file(reference: &Path) -> Result<PathBuf> {
 }
 
 fn verify(path: &Path) -> Result<()> {
-    let files = discover_core_files(path)?;
+    let files = discover_save_files(path)?;
     let mut failed = false;
     for file in files {
         let valid = verify_file(&file.path)?;

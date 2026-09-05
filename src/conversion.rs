@@ -10,7 +10,7 @@ use murmur3::murmur3_32;
 
 use crate::{
     crypto::Citrus,
-    discover::discover_core_files,
+    discover::{SaveFileKind, discover_save_files},
     format::{ChecksumStatus, DsssHeader, Platform, SaveFlags, checksum_status, parse_header},
 };
 
@@ -39,7 +39,7 @@ pub fn convert_path(
     options: ConversionOptions,
     force: bool,
 ) -> Result<Vec<PathBuf>> {
-    let files = discover_core_files(input)?;
+    let files = discover_save_files(input)?;
     let output_is_directory = input.is_dir();
     if output_is_directory {
         if output.exists() && !force {
@@ -62,7 +62,10 @@ pub fn convert_path(
     let mut options = options;
     let mut written = Vec::with_capacity(files.len());
     for file in files {
-        if file.platform == Platform::Steam && options.source_curve_index.is_none() {
+        if file.kind == SaveFileKind::Core
+            && file.platform == Platform::Steam
+            && options.source_curve_index.is_none()
+        {
             let steamid64 =
                 options.source_steamid64.context("Steam source requires --source-steamid64")?;
             options.source_curve_index =
@@ -83,8 +86,13 @@ pub fn convert_path(
                 file.path.display()
             );
         }
-        let converted = convert_bytes(&data, options)
-            .with_context(|| format!("could not convert {}", file.path.display()))?;
+        let converted = match file.kind {
+            SaveFileKind::Core => convert_bytes(&data, options),
+            SaveFileKind::Auxiliary => {
+                convert_auxiliary_bytes(&data, options.target, options.target_steamid64)
+            }
+        }
+        .with_context(|| format!("could not convert {}", file.path.display()))?;
         fs::write(&output_path, converted)
             .with_context(|| format!("could not write {}", output_path.display()))?;
         written.push(output_path);
