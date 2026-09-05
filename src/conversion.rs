@@ -152,12 +152,16 @@ pub fn convert_bytes_with_template(
         options.target_steamid64,
         options.target_curve_index,
       )?;
-      let source = SavePayload::parse(&payload).context("invalid source class stream")?;
-      let target =
-        SavePayload::parse(&target_payload).context("invalid target-template class stream")?;
+      let source = SavePayload::parse_at_offset(&payload, class_stream_offset(header.platform()))
+        .context("invalid source class stream")?;
+      let target = SavePayload::parse_at_offset(
+        &target_payload,
+        class_stream_offset(target_header.platform()),
+      )
+      .context("invalid target-template class stream")?;
       payload = merge_onto_template(&source, &target)
         .0
-        .encode()
+        .encode_at_offset(class_stream_offset(target_header.platform()))
         .context("could not encode translated class stream")?;
     }
   }
@@ -169,6 +173,14 @@ fn target_platform(target: TargetPlatform) -> Platform {
   match target {
     TargetPlatform::NintendoSwitch => Platform::NintendoSwitch,
     TargetPlatform::Steam => Platform::Steam,
+  }
+}
+
+fn class_stream_offset(platform: Platform) -> usize {
+  match platform {
+    Platform::NintendoSwitch => DSSS_HEADER_LEN,
+    Platform::Steam => align_up(DSSS_HEADER_LEN, 16),
+    Platform::Auxiliary | Platform::Unknown => 0,
   }
 }
 
@@ -449,7 +461,7 @@ mod tests {
         },
       }],
     }
-    .encode()
+    .encode_at_offset(DSSS_HEADER_LEN)
     .expect("source payload should encode");
     let target_payload = SavePayload {
       entries: vec![NativeClass {
@@ -471,7 +483,7 @@ mod tests {
         },
       }],
     }
-    .encode()
+    .encode_at_offset(align_up(DSSS_HEADER_LEN, 16))
     .expect("target payload should encode");
     let source = pack_payload(&source_payload, TargetPlatform::NintendoSwitch, None, None)
       .expect("Switch source should pack");
