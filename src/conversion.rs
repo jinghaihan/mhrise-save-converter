@@ -210,6 +210,16 @@ pub fn convert_auxiliary_bytes(
     bail!("auxiliary save payload exceeds file bounds");
   }
 
+  let target_payload_offset = match target {
+    TargetPlatform::NintendoSwitch => DSSS_HEADER_LEN,
+    TargetPlatform::Steam => align_up(DSSS_HEADER_LEN, 8) + 8,
+  };
+  let payload =
+    SavePayload::parse_at_offset(&data[source_payload_offset..payload_end], source_payload_offset)
+      .context("invalid auxiliary class stream")?
+      .encode_at_offset(target_payload_offset)
+      .context("could not realign auxiliary class stream")?;
+
   let mut output = Vec::with_capacity(data.len() + 12);
   output.extend_from_slice(b"DSSS");
   output.extend_from_slice(&2u32.to_le_bytes());
@@ -224,7 +234,8 @@ pub fn convert_auxiliary_bytes(
       output.extend_from_slice(&(id & u32::MAX as u64).to_le_bytes());
     }
   }
-  output.extend_from_slice(&data[source_payload_offset..payload_end]);
+  debug_assert_eq!(output.len(), target_payload_offset);
+  output.extend_from_slice(&payload);
   finish_file(output)
 }
 
@@ -420,11 +431,29 @@ mod tests {
   }
 
   #[test]
-  fn auxiliary_wrapper_roundtrip_preserves_payload() {
+  fn auxiliary_wrapper_roundtrip_realigns_class_stream() {
+    let payload = SavePayload {
+      entries: vec![NativeClass {
+        native_hash: 0x470b_c310,
+        class: Class {
+          hash: 0x6ca3_b0ec,
+          fields: vec![Field {
+            hash: 0x77ea_ad8a,
+            field_type: 8,
+            value: FieldValue::Scalar {
+              size: 8,
+              bytes: 0x1122_3344_5566_7788u64.to_le_bytes().to_vec(),
+            },
+          }],
+        },
+      }],
+    };
     let mut switch = Vec::from(&b"DSSS"[..]);
     switch.extend_from_slice(&2u32.to_le_bytes());
     switch.extend_from_slice(&SaveFlags::empty().bits().to_le_bytes());
-    switch.extend_from_slice(b"auxiliary payload with album data");
+    switch.extend_from_slice(
+      &payload.encode_at_offset(DSSS_HEADER_LEN).expect("Switch auxiliary payload should encode"),
+    );
     let switch = finish_file(switch).expect("Switch auxiliary fixture should be valid");
     let steam_id = 76_561_198_382_766_028u64;
 
@@ -432,6 +461,11 @@ mod tests {
       .expect("Switch auxiliary conversion should succeed");
     assert_eq!(&steam[8..12], &SaveFlags::HAS_ID.bits().to_le_bytes());
     assert_eq!(&steam[16..24], &(steam_id & u32::MAX as u64).to_le_bytes());
+    assert_eq!(
+      SavePayload::parse_at_offset(&steam[24..steam.len() - FILE_HASH_LEN], 24)
+        .expect("Steam auxiliary payload should parse"),
+      payload
+    );
 
     let roundtrip = convert_auxiliary_bytes(&steam, TargetPlatform::NintendoSwitch, None)
       .expect("Steam auxiliary conversion should succeed");
