@@ -1,0 +1,32 @@
+[package]
+name = "mhrise-save-converter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A CLI for inspecting and converting Monster Hunter Rise save containers."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/jinghaihan/mhrise-save-converter"
+keywords = ["monster-hunter-rise", "save-editor", "steam", "nintendo-switch"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0"
+bitflags = "2.9"
+clap = { version = "4.5", features = ["derive"] }
+murmur3 = "0.5"
+thiserror = "2.0"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
