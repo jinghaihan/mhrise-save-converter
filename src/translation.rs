@@ -1,6 +1,7 @@
 use crate::payload::{Array, ArrayValue, Class, Field, FieldValue, NativeClass, SavePayload};
 
 const SAVE_FILE_DETAIL_NATIVE_HASH: u32 = 0x85e9_04c1;
+const SNAPSHOT_SAVE_DATA_NATIVE_HASH: u32 = 0x1322_883a;
 const HUNTER_RECORD_CLASS_HASH: u32 = 0xaf6e_a643;
 const NETWORK_SAVE_DATA_CLASS_HASH: u32 = 0xfdb8_053d;
 
@@ -43,7 +44,7 @@ fn merge_top_level(
   target: &NativeClass,
   report: &mut MergeReport,
 ) -> NativeClass {
-  if target.native_hash == SAVE_FILE_DETAIL_NATIVE_HASH {
+  if matches!(target.native_hash, SAVE_FILE_DETAIL_NATIVE_HASH | SNAPSHOT_SAVE_DATA_NATIVE_HASH) {
     report.preserved_target_top_level_classes += 1;
     return target.clone();
   }
@@ -220,6 +221,28 @@ mod tests {
     let target = SavePayload {
       entries: vec![NativeClass {
         native_hash: SAVE_FILE_DETAIL_NATIVE_HASH,
+        class: Class { hash: 10, fields: vec![field(100, 9)] },
+      }],
+    };
+
+    let (merged, report) = merge_onto_template(&source, &target);
+
+    assert_eq!(merged, target);
+    assert_eq!(report.preserved_target_top_level_classes, 1);
+    assert_eq!(report.copied_source_fields, 0);
+  }
+
+  #[test]
+  fn preserves_target_telemetry_snapshot() {
+    let source = SavePayload {
+      entries: vec![NativeClass {
+        native_hash: SNAPSHOT_SAVE_DATA_NATIVE_HASH,
+        class: Class { hash: 10, fields: vec![field(100, 1)] },
+      }],
+    };
+    let target = SavePayload {
+      entries: vec![NativeClass {
+        native_hash: SNAPSHOT_SAVE_DATA_NATIVE_HASH,
         class: Class { hash: 10, fields: vec![field(100, 9)] },
       }],
     };
