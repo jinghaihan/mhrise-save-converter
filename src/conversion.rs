@@ -11,7 +11,7 @@ use murmur3::murmur3_32;
 use crate::{
     crypto::Citrus,
     discover::discover_core_files,
-    format::{DsssHeader, Platform, SaveFlags, checksum_status, parse_header},
+    format::{ChecksumStatus, DsssHeader, Platform, SaveFlags, checksum_status, parse_header},
 };
 
 const DSSS_HEADER_LEN: usize = 12;
@@ -68,6 +68,12 @@ pub fn convert_path(
         };
         let data = fs::read(&file.path)
             .with_context(|| format!("could not read {}", file.path.display()))?;
+        if !matches!(checksum_status(&data)?, ChecksumStatus::Valid) {
+            bail!(
+                "source file {} has an invalid checksum; refusing to convert it",
+                file.path.display()
+            );
+        }
         let converted = convert_bytes(&data, options)
             .with_context(|| format!("could not convert {}", file.path.display()))?;
         fs::write(&output_path, converted)
@@ -79,6 +85,9 @@ pub fn convert_path(
 
 pub fn convert_bytes(data: &[u8], options: ConversionOptions) -> Result<Vec<u8>> {
     let header = parse_header(data).context("invalid source DSSS header")?;
+    if !matches!(checksum_status(data)?, ChecksumStatus::Valid) {
+        bail!("source save has an invalid checksum; refusing to convert it");
+    }
     let source_platform = header.platform();
     let payload =
         unpack_payload(data, header, options.source_steamid64, options.source_curve_index)?;
@@ -224,4 +233,64 @@ pub fn verify_file(path: &Path) -> Result<bool> {
     let data = fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     let _ = parse_header(&data)?;
     Ok(matches!(checksum_status(&data)?, crate::format::ChecksumStatus::Valid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_STEAM_ID: u64 = 76_561_198_382_766_028;
+
+    #[test]
+    fn switch_steam_switch_roundtrip_preserves_payload() {
+        let payload = b"MHRise save payload used for a conversion round trip";
+        let switch = pack_payload(payload, TargetPlatform::NintendoSwitch, None, None)
+            .expect("Switch packing should succeed");
+        let steam = convert_bytes(
+            &switch,
+            ConversionOptions {
+                target: TargetPlatform::Steam,
+                source_steamid64: None,
+                target_steamid64: Some(TEST_STEAM_ID),
+                source_curve_index: None,
+                target_curve_index: Some(0),
+            },
+        )
+        .expect("Switch to Steam conversion should succeed");
+        let roundtrip = convert_bytes(
+            &steam,
+            ConversionOptions {
+                target: TargetPlatform::NintendoSwitch,
+                source_steamid64: Some(TEST_STEAM_ID),
+                target_steamid64: None,
+                source_curve_index: Some(0),
+                target_curve_index: None,
+            },
+        )
+        .expect("Steam to Switch conversion should succeed");
+
+        assert_eq!(unpack_deflate(&roundtrip).expect("roundtrip should deflate"), payload);
+        assert!(matches!(checksum_status(&roundtrip), Ok(ChecksumStatus::Valid)));
+    }
+
+    #[test]
+    fn conversion_rejects_invalid_outer_checksum() {
+        let mut switch = pack_payload(b"payload", TargetPlatform::NintendoSwitch, None, None)
+            .expect("Switch packing should succeed");
+        switch[20] ^= 0xff;
+
+        let error = convert_bytes(
+            &switch,
+            ConversionOptions {
+                target: TargetPlatform::NintendoSwitch,
+                source_steamid64: None,
+                target_steamid64: None,
+                source_curve_index: None,
+                target_curve_index: None,
+            },
+        )
+        .expect_err("invalid source checksum should be rejected");
+
+        assert!(error.to_string().contains("invalid checksum"));
+    }
 }
