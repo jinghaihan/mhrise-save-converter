@@ -7,7 +7,7 @@ Save-container tooling and experimental cross-platform conversion research for *
 
 ## Status
 
-Steam-to-Steam account resigning is implemented at the DSSS/Citrus container layer and still requires broader in-game validation. Nintendo Switch-to-Steam and Steam-to-Switch conversion are not complete: the platforms share most of their serialized class schema, but platform-specific classes and fields must be translated before the result is game-compatible.
+Steam-to-Steam account resigning is implemented at the DSSS/Citrus container layer. Experimental cross-platform schema translation is implemented as well: a destination save can be used as a schema/default template, and Switch-to-Steam conversion can fall back to built-in Steam defaults. In-game validation across more saves and game versions is still pending, so all conversion paths remain WIP.
 
 ## Save Structure
 
@@ -15,9 +15,9 @@ Monster Hunter Rise saves are directories containing several DSSS container file
 
 | File or pattern | Contents | Converter behavior |
 | --- | --- | --- |
-| `data00-1.bin` | System and global save data, such as settings and account-level state | Container conversion implemented; cross-platform schema translation is WIP |
-| `data###Slot.bin` | Character/save-slot data, such as hunter progress, equipment, items, and quests | Container conversion implemented; cross-platform schema translation is WIP |
-| `SS1_*`, `SS4_*`, `SS7_*` | Screenshot and album-related auxiliary data | Wrapper conversion implemented; in-game cross-platform validation is pending |
+| `data00-1.bin` | System and global save data, such as settings and account-level state | Container and experimental platform-schema conversion |
+| `data###Slot.bin` | Character/save-slot data, such as hunter progress, equipment, items, and quests | Container and experimental platform-schema conversion |
+| `SS1_*`, `SS4_*`, `SS7_*` | Screenshot and album-related auxiliary data | Wrapper conversion; the contained album payload is preserved |
 | Other files | Version- or feature-specific auxiliary files | Ignored unless explicitly supported |
 
 The two core file types use related logical payloads and different platform containers:
@@ -27,7 +27,7 @@ The two core file types use related logical payloads and different platform cont
 - Known auxiliary files use an unencrypted wrapper: Switch uses no extra flag, while Steam uses `HAS_ID` (`0x02`) and stores the account identifier in the wrapper.
 - Both formats carry an outer MurmurHash3 integrity value. Steam files also contain per-block Citrus integrity checks.
 
-Container conversion decompresses or decrypts the core payload, keeps that payload unchanged, then repacks it into the target platform container and regenerates the required integrity values. This is sufficient for Steam-to-Steam resigning but not for cross-platform conversion. A compatible cross-platform result must also preserve or construct destination-only classes and fields. Known auxiliary files are rewrapped while preserving their filenames, slot numbers, and payload bytes. Files present only on one platform cannot be reconstructed; keep the original save directory as a backup.
+Same-platform resigning decrypts the core payload, keeps it unchanged, then repacks it and regenerates the required integrity values. Cross-platform conversion additionally parses the self-describing RE Engine class stream, follows the destination class order, carries over matching source fields, and preserves or constructs destination-only classes and fields. Known auxiliary files are rewrapped while preserving their filenames, slot numbers, and payload bytes. Files absent from the source directory cannot be reconstructed; keep the original save directory as a backup.
 
 ## Usage
 
@@ -40,8 +40,16 @@ The inspector identifies core save files, platform flags, and file-integrity che
 
 ### Switch → Steam
 
-> [!CAUTION]
-> This path currently performs container conversion only. Its output is not expected to load in the game until schema translation is implemented.
+Using an existing Steam save as the target template is preferred. It supplies the exact destination schema, platform settings, key configuration, save metadata, and Curve Index:
+
+```bash
+cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
+  --to steam \
+  --target-steamid64 76561198382766028 \
+  --target-reference /path/to/existing/win64_save
+```
+
+When no Steam template is available, provide the target Curve Index explicitly. The converter constructs the known Steam-only classes and fields from built-in defaults:
 
 ```bash
 cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
@@ -52,26 +60,22 @@ cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
 
 ### Steam → Switch
 
-> [!CAUTION]
-> This path currently performs container conversion only. Its output is not expected to load in the game until schema translation is implemented.
+Steam-to-Switch currently requires a Switch target template because several Switch-only DLC fields have no trustworthy source on Steam:
 
 ```bash
 cargo run -- convert /path/to/win64_save /tmp/mhrise-switch \
   --to switch \
   --source-steamid64 76561198382766028 \
-  --source-curve-index 116
+  --source-curve-index 116 \
+  --target-reference /path/to/existing/switch-save
 ```
 
-If the source Curve Index is unknown, omit `--source-curve-index` and the tool will try to detect it. To use the Curve Index from an existing target Steam save, provide `--target-reference` together with `--target-steamid64`:
+If the source Curve Index is unknown, omit `--source-curve-index` and the tool will try to detect it. For a Steam destination, `--target-reference` also detects the target Curve Index; without a reference, `--target-curve-index` is required. A reference directory should contain matching `data00-1.bin` and slot filenames.
 
-```bash
-cargo run -- convert /path/to/monster-hunter-rise-ns /tmp/mhrise-steam \
-  --to steam \
-  --target-steamid64 76561198382766028 \
-  --target-reference /path/to/existing/win64_save
-```
+The converter rewrites the core `data00-1.bin` and `data###Slot.bin` files together with known `SS1_*`, `SS4_*`, and `SS7_*` files. Other files are intentionally left out. A destination template is read-only and is never modified. Use a new output directory and keep both original saves as backups; `--force` is required to reuse a non-empty output path.
 
-The converter rewrites the core `data00-1.bin` and `data###Slot.bin` files together with known `SS1_*`, `SS4_*`, and `SS7_*` files. Other files are intentionally left out. Use a new output directory and keep the original save as a backup; `--force` is required to reuse a non-empty output path.
+> [!IMPORTANT]
+> Successful parsing and checksum verification only prove structural validity. The game is the final compatibility test; disable Steam Cloud and test with backed-up local saves first.
 
 ## Development
 

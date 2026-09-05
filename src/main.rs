@@ -42,7 +42,7 @@ enum Command {
     /// Target Citrus curve index.
     #[arg(long)]
     target_curve_index: Option<usize>,
-    /// Existing target Steam save used to detect the target Curve Index.
+    /// Existing target save used as a schema/default template and, for Steam, to detect its curve.
     #[arg(long)]
     target_reference: Option<PathBuf>,
     /// Permit writing into an existing output directory or file.
