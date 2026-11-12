@@ -43,6 +43,8 @@ impl Field {
 pub(super) struct GuiView {
   model: GuiModel,
   inputs: [Entity<InputState>; 7],
+  slot_names: [Entity<InputState>; 3],
+  slot_names_key: Option<super::SlotInputKey>,
   advanced: bool,
   picking_folder: bool,
   _subscriptions: Vec<Subscription>,
@@ -85,9 +87,21 @@ impl GuiView {
     subscriptions.push(window.observe_window_appearance(|window, cx| {
       Theme::sync_system_appearance(Some(window), cx);
     }));
+    let slot_names = std::array::from_fn(|index| {
+      let input = cx.new(|cx| InputState::new(window, cx).placeholder("Hunter name"));
+      subscriptions.push(cx.subscribe(&input, move |this, input, event, cx| {
+        if matches!(event, InputEvent::Change) {
+          this.model.rename_slot(index, input.read(cx).value().to_string());
+          cx.notify();
+        }
+      }));
+      input
+    });
     Self {
       model: GuiModel::default(),
       inputs,
+      slot_names,
+      slot_names_key: None,
       advanced: false,
       picking_folder: false,
       _subscriptions: subscriptions,
@@ -97,6 +111,20 @@ impl GuiView {
 
   fn busy(&self) -> bool {
     self.model.worker.is_some() || self.picking_folder
+  }
+
+  fn sync_slot_names(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if self.slot_names_key == self.model.slots_key {
+      return;
+    }
+    if let Some(report) = &self.model.slots {
+      for (input, slot) in self.slot_names.iter().zip(&report.slots) {
+        input.update(cx, |input, cx| {
+          input.set_value(slot.name.clone().unwrap_or_default(), window, cx)
+        });
+      }
+    }
+    self.slot_names_key = self.model.slots_key.clone();
   }
 
   fn input(&self, field: Field) -> &Entity<InputState> {
@@ -368,7 +396,7 @@ impl GuiView {
     for index in 0..3 {
       let slot = self.model.slot_character(index);
       let occupied = slot.is_some();
-      let name = slot.and_then(|slot| slot.name.clone()).unwrap_or_else(|| "Empty".to_owned());
+      let original = usize::from(self.model.slot_order[index] - 1);
       let mut progress = div()
         .w(px(140.))
         .flex_shrink_0()
@@ -404,13 +432,21 @@ impl GuiView {
               .id(("slot-name", index))
               .flex_1()
               .min_w_0()
-              .truncate()
+              .pr_3()
               .text_color(if occupied {
                 cx.theme().foreground
               } else {
                 cx.theme().muted_foreground
               })
-              .child(name),
+              .when(occupied, |this| {
+                this.child(
+                  Input::new(&self.slot_names[original])
+                    .id(("hunter-name", original))
+                    .small()
+                    .disabled(busy),
+                )
+              })
+              .when(!occupied, |this| this.child("Empty")),
           )
           .child(progress)
           .child(
@@ -449,7 +485,12 @@ impl GuiView {
                   .ghost()
                   .small()
                   .label("Export")
-                  .disabled(busy || !occupied)
+                  .tooltip(if self.model.renamed_slots[original].is_some() {
+                    "Save name changes before exporting"
+                  } else {
+                    "Export this hunter and album"
+                  })
+                  .disabled(busy || !occupied || self.model.renamed_slots[original].is_some())
                   .on_click(
                     cx.listener(move |this, _, window, cx| this.export_slot(index, window, cx)),
                   ),
@@ -518,7 +559,8 @@ impl GuiView {
 }
 
 impl Render for GuiView {
-  fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    self.sync_slot_names(window, cx);
     let busy = self.busy();
     let managing = self.model.mode == GuiMode::ManageSlots;
     let mut form = Form::horizontal()
@@ -592,6 +634,7 @@ impl Render for GuiView {
       content = content.child(div().flex().justify_start().child(
         Button::new("read-save").outline().label("Read save").disabled(busy).on_click(cx.listener(
           |this, _, window, cx| {
+            this.slot_names_key = None;
             this.model.load_slots();
             this.after_command(window, cx);
           },

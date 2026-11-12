@@ -2,6 +2,7 @@
 
 mod empty_summary;
 mod hunter;
+mod rename;
 pub use hunter::{export_hunter, import_hunter};
 
 use std::{
@@ -119,6 +120,18 @@ pub fn edit_slots(
   deleted: [bool; 3],
   options: SlotOptions,
 ) -> Result<Vec<PathBuf>> {
+  edit_slots_with_names(input, output, order, deleted, [None, None, None], options)
+}
+
+/// Rename, move and delete hunters together. Both edit arrays refer to ORIGINAL slots.
+pub fn edit_slots_with_names(
+  input: &Path,
+  output: &Path,
+  order: [u8; 3],
+  deleted: [bool; 3],
+  names: [Option<String>; 3],
+  options: SlotOptions,
+) -> Result<Vec<PathBuf>> {
   let mut sorted = order;
   sorted.sort_unstable();
   ensure!(sorted == [1, 2, 3], "slot order must contain each position 1–3 exactly once");
@@ -136,12 +149,23 @@ pub fn edit_slots(
       index + 1
     );
   }
+  let mut changed = deleted;
+  for (index, name) in names.iter().enumerate() {
+    if deleted[index] {
+      continue;
+    }
+    if let Some(name) = name {
+      ensure!(bundle.inspection.slots[index].occupied(), "cannot rename an empty slot");
+      rename::validate_name(name)?;
+      changed[index] |= bundle.inspection.slots[index].name.as_ref() != Some(name);
+    }
+  }
   ensure!(
-    deleted.iter().any(|delete| *delete)
+    changed.iter().any(|changed| *changed)
       || order.iter().enumerate().any(|(to, from)| {
         usize::from(*from - 1) != to && bundle.inspection.slots[usize::from(*from - 1)].occupied()
       }),
-    "slot edit does not move or delete any character"
+    "slot edit does not move, delete or rename any character"
   );
   let offset = class_stream_offset(bundle.inspection.platform);
   let mut expected = bundle.system.clone();
@@ -174,6 +198,16 @@ pub fn edit_slots(
   } else {
     None
   };
+  for (index, name) in names.iter().enumerate() {
+    if !deleted[index]
+      && let Some(name) = name
+    {
+      let ArrayValue::Class(summary) = &mut hunters.values[index] else {
+        bail!("invalid hunter summary")
+      };
+      rename::set_summary_name(summary, name)?;
+    }
+  }
   hunters.values = order.map(|from| hunters.values[usize::from(from - 1)].clone()).to_vec();
   if let Some(hashes) = &mut hunters.class_hashes {
     *hashes = order.map(|from| hashes[usize::from(from - 1)]).to_vec();
@@ -188,17 +222,29 @@ pub fn edit_slots(
       }
     }
   }
-  let system_plain = rewrite_summaries(&bundle.system_plain, &expected, offset, order, deleted)?;
+  let system_plain = rewrite_summaries(&bundle.system_plain, &expected, offset, order, changed)?;
   let system_bytes = repack(&system_plain, &bundle)?;
   bundle.files.insert(SYSTEM_FILE.to_owned(), system_bytes);
 
   for (index, from) in order.iter().copied().enumerate() {
     let to = index as u8 + 1;
-    if from != to
+    let name = &names[usize::from(from - 1)];
+    if (from != to || name.is_some())
       && !deleted[usize::from(from - 1)]
       && let Some((plain, role)) = bundle.roles.get(&from)
     {
-      let moved = move_role(plain, role, offset, from, to)?;
+      let moved = if let Some(name) = name {
+        let (renamed, role) = rename::rename_role(
+          plain,
+          role,
+          offset,
+          bundle.inspection.slots[usize::from(from - 1)].name.as_deref().unwrap(),
+          name,
+        )?;
+        move_role(&renamed, &role, offset, from, to)?
+      } else {
+        move_role(plain, role, offset, from, to)?
+      };
       let packed = repack(&moved, &bundle)?;
       // Retain the source name until the single simultaneous filename permutation below.
       bundle.files.insert(role_filename(from), packed);
@@ -468,7 +514,7 @@ fn rewrite_summaries(
   expected: &SavePayload,
   offset: usize,
   order: [u8; 3],
-  deleted: [bool; 3],
+  changed: [bool; 3],
 ) -> Result<Vec<u8>> {
   let ranges = array_ranges(plain, offset, &[LOAD_INFO, HUNTERS])?;
   ensure!(ranges.elements.len() == 3, "expected exactly three serialized summaries");
@@ -494,7 +540,7 @@ fn rewrite_summaries(
   // summaries, preserving the untouched summary and every surrounding byte.
   patched.truncate(ranges.elements[0].start);
   for (index, value) in hunters.values.iter().enumerate() {
-    if usize::from(order[index] - 1) != index || deleted[usize::from(order[index] - 1)] {
+    if usize::from(order[index] - 1) != index || changed[usize::from(order[index] - 1)] {
       let ArrayValue::Class(class) = value else {
         bail!("hunter summary is not a class");
       };
@@ -504,7 +550,7 @@ fn rewrite_summaries(
     }
   }
   patched.extend_from_slice(&plain[ranges.elements[2].end..]);
-  if deleted.iter().any(|delete| *delete)
+  if changed.iter().any(|changed| *changed)
     && !SavePayload::parse_at_offset(&patched, offset).is_ok_and(|parsed| parsed == *expected)
   {
     // A smaller empty summary can shift the alignment of following fields.
@@ -866,6 +912,119 @@ mod tests {
     .unwrap();
     fs::write(path.join("unrecognized-file.dat"), b"preserve unknown file exactly").unwrap();
     options
+  }
+
+  #[test]
+  fn rename_updates_only_selected_summary_and_owned_guild_card() {
+    for platform in [TargetPlatform::Steam, TargetPlatform::NintendoSwitch] {
+      let temp = TestDirectory::new();
+      let source = temp.0.join("source");
+      let options = fixture(&source, platform, &[1, 2]);
+      add_owner_name(&source, options, 1, "Hunter 1");
+      let original = load_bundle(&source, options).unwrap();
+      for (index, name) in ["A", "猎人小明", "New Hunter"].iter().enumerate() {
+        let output = temp.0.join(format!("renamed{index}"));
+        edit_slots_with_names(
+          &source,
+          &output,
+          [1, 2, 3],
+          [false; 3],
+          [Some((*name).into()), None, None],
+          options,
+        )
+        .unwrap();
+        let renamed = load_bundle(&output, options).unwrap();
+        assert_eq!(renamed.inspection.slots[0].name.as_deref(), Some(*name));
+        let mut expected = original.roles[&1].1.clone();
+        let FieldValue::Class(owner) =
+          &mut field_mut(&mut expected, 0x8c6f_b4c6, 0xd51b_2c9f).unwrap().value
+        else {
+          unreachable!()
+        };
+        owner.fields[0].value = FieldValue::String(name.encode_utf16().collect());
+        assert_eq!(
+          renamed.roles[&1].1, expected,
+          "other cards and historical names must remain exact"
+        );
+        for (name, bytes) in &original.files {
+          if name != SYSTEM_FILE && name != &role_filename(1) {
+            assert_eq!(&renamed.files[name], bytes);
+          }
+        }
+      }
+      let moved = temp.0.join("moved");
+      edit_slots_with_names(
+        &source,
+        &moved,
+        [3, 2, 1],
+        [false, true, false],
+        [Some("Moved".into()), None, None],
+        options,
+      )
+      .unwrap();
+      let moved = load_bundle(&moved, options).unwrap();
+      assert_eq!(moved.inspection.slots[2].name.as_deref(), Some("Moved"));
+      assert!(!moved.roles.contains_key(&1));
+      assert!(!moved.roles.contains_key(&2));
+      validate_role_position(&moved.roles[&3].1, 3).unwrap();
+      assert_eq!(load_bundle(&source, options).unwrap().files, original.files);
+    }
+  }
+
+  fn add_owner_name(path: &Path, options: SlotOptions, slot: u8, name: &str) {
+    let bundle = load_bundle(path, options).unwrap();
+    let mut role = bundle.roles[&slot].1.clone();
+    let card = Class { hash: 0x4454_1321, fields: vec![text(0x02bb_0110, name), text(99, name)] };
+    role.entries.push(NativeClass {
+      native_hash: 0x8c6f_b4c6,
+      class: Class {
+        hash: 0xea1f_a4f9,
+        fields: vec![
+          Field {
+            hash: 0xd51b_2c9f,
+            field_type: 17,
+            value: FieldValue::Class(Box::new(card.clone())),
+          },
+          Field { hash: 98, field_type: 17, value: FieldValue::Class(Box::new(card)) },
+        ],
+      },
+    });
+    let plain = role.encode_at_offset(class_stream_offset(bundle.inspection.platform)).unwrap();
+    fs::write(path.join(role_filename(slot)), repack(&plain, &bundle).unwrap()).unwrap();
+  }
+
+  #[test]
+  fn rename_rejects_invalid_names_empty_slots_and_ambiguous_owner_names() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[1]);
+    add_owner_name(&source, options, 1, "different");
+    for name in ["", "   ", "line\nbreak", "embedded\0nul", "1234567890123", "Valid"] {
+      let output = temp.0.join("invalid");
+      assert!(
+        edit_slots_with_names(
+          &source,
+          &output,
+          [1, 2, 3],
+          [false; 3],
+          [Some(name.into()), None, None],
+          options
+        )
+        .is_err()
+      );
+      assert!(!output.exists());
+    }
+    assert!(
+      edit_slots_with_names(
+        &source,
+        &temp.0.join("empty"),
+        [1, 2, 3],
+        [false; 3],
+        [None, Some("Empty".into()), None],
+        options
+      )
+      .is_err()
+    );
   }
 
   #[test]

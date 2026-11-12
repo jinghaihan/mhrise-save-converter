@@ -55,6 +55,14 @@ mhrise-save import-slot character.hunter /path/to/destination-save /path/to/new-
 
 Steam and Switch packages must be imported into the same platform. Add `--replace` to replace an occupied slot. Other hunters and unrelated files are preserved. The source save is never modified; output must be a new directory outside it. A hunter already present in another slot cannot be imported again.
 
+### Rename a hunter
+
+```sh
+mhrise-save rename-slot /path/to/save /path/to/new-save --slot 1 --name "New Hunter" --steamid64 <STEAMID64>
+```
+
+Names must be nonblank, contain no control characters, and fit within 12 UTF-16 code units. Only the selection-screen name and the hunter's own guild-card name are updated; historical records and other hunters' names are preserved.
+
 ## Switch → Steam
 
 Use an existing Steam save as the target template when possible. It provides the destination schema, platform settings, metadata, and Curve Index:

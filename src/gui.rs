@@ -20,7 +20,8 @@ use mhrise_save_converter::conversion::{
   convert_path_with_progress, preflight_path,
 };
 use mhrise_save_converter::slots::{
-  SlotInspection, SlotOptions, SlotSummary, edit_slots, export_hunter, import_hunter, inspect_slots,
+  SlotInspection, SlotOptions, SlotSummary, edit_slots_with_names, export_hunter, import_hunter,
+  inspect_slots,
 };
 
 type SlotInputKey = (String, String, String);
@@ -83,6 +84,7 @@ pub struct GuiModel {
   slots_key: Option<SlotInputKey>,
   slot_order: [u8; 3],
   deleted_slots: [bool; 3],
+  renamed_slots: [Option<String>; 3],
   pending_slot_deletion: Option<PendingSlotDeletion>,
   pending_hunter_import: Option<PendingHunterImport>,
   source: String,
@@ -110,6 +112,7 @@ impl Default for GuiModel {
       slots_key: None,
       slot_order: [1, 2, 3],
       deleted_slots: [false; 3],
+      renamed_slots: [None, None, None],
       pending_slot_deletion: None,
       pending_hunter_import: None,
       source: String::new(),
@@ -138,6 +141,7 @@ impl GuiModel {
       self.slots_key = None;
       self.slot_order = [1, 2, 3];
       self.deleted_slots = [false; 3];
+      self.renamed_slots = [None, None, None];
       self.pending_slot_deletion = None;
     }
   }
@@ -185,6 +189,11 @@ impl GuiModel {
     self.slots_key.as_ref() == Some(&self.slot_input_key())
       && self.slots.as_ref().is_some_and(|report| {
         self.deleted_slots.iter().any(|deleted| *deleted)
+          || self
+            .renamed_slots
+            .iter()
+            .enumerate()
+            .any(|(index, name)| name.is_some() && !self.deleted_slots[index])
           || self.slot_order.iter().enumerate().any(|(index, from)| {
             usize::from(*from) != index + 1
               && report.slots.iter().any(|slot| slot.number == *from && slot.occupied())
@@ -210,6 +219,24 @@ impl GuiModel {
     if let Some(adjacent) = adjacent.filter(|other| *other < self.slot_order.len()) {
       self.slot_order.swap(index, adjacent);
     }
+  }
+
+  fn rename_slot(&mut self, original: usize, name: String) {
+    if self.worker.is_some()
+      || self.slots_key.as_ref() != Some(&self.slot_input_key())
+      || original >= 3
+    {
+      return;
+    }
+    let Some(slot) = self
+      .slots
+      .as_ref()
+      .and_then(|report| report.slots.get(original))
+      .filter(|slot| slot.occupied())
+    else {
+      return;
+    };
+    self.renamed_slots[original] = (slot.name.as_ref() != Some(&name)).then_some(name);
   }
 
   fn request_slot_deletion(&mut self, index: usize) {
@@ -258,6 +285,7 @@ impl GuiModel {
     self.slots_key = None;
     self.slot_order = [1, 2, 3];
     self.deleted_slots = [false; 3];
+    self.renamed_slots = [None, None, None];
     self.pending_slot_deletion = None;
     self.preflight = None;
     self.progress = None;
@@ -275,7 +303,7 @@ impl GuiModel {
       let (source, output) = self.paths()?;
       if !self.can_save_slots() {
         return Err(
-          "Read the current save and move or delete a character before saving.".to_owned(),
+          "Read the current save and move, delete or rename a character before saving.".to_owned(),
         );
       }
       Ok((source, output, self.slot_options()?))
@@ -289,6 +317,7 @@ impl GuiModel {
     };
     let order = self.slot_order;
     let deleted = self.deleted_slots;
+    let names = self.renamed_slots.clone();
     let (sender, receiver) = mpsc::channel();
     self.preflight = None;
     self.progress = None;
@@ -296,8 +325,8 @@ impl GuiModel {
     self.status = "Saving slot changes…".to_owned();
     self.worker = Some(receiver);
     thread::spawn(move || {
-      let result =
-        edit_slots(&source, &output, order, deleted, options).map_err(|error| format!("{error:#}"));
+      let result = edit_slots_with_names(&source, &output, order, deleted, names, options)
+        .map_err(|error| format!("{error:#}"));
       let _ = sender.send(WorkerEvent::Finished(result));
     });
   }
@@ -832,6 +861,26 @@ mod tests {
     };
     app.slots_key = Some(app.slot_input_key());
     app
+  }
+
+  #[test]
+  fn rename_tracks_original_hunter_and_reverting_clears_pending_change() {
+    let mut app = slot_deletion_app();
+    app.rename_slot(0, "Renamed".into());
+    assert!(app.can_save_slots());
+    app.move_slot(0, false);
+    assert_eq!(app.renamed_slots[0].as_deref(), Some("Renamed"));
+    assert_eq!(app.slot_order, [2, 1, 3]);
+    app.move_slot(1, true);
+    app.rename_slot(0, "Hunter 1".into());
+    assert!(!app.can_save_slots());
+    app.rename_slot(2, "Empty".into());
+    assert!(!app.can_save_slots());
+    app.rename_slot(1, "Rename then delete".into());
+    app.request_slot_deletion(1);
+    let pending = app.pending_slot_deletion.take().unwrap();
+    app.confirm_slot_deletion(pending);
+    assert!(app.can_save_slots());
   }
 
   #[test]

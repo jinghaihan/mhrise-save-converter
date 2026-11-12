@@ -138,6 +138,12 @@ pub(crate) fn encode_class_at_offset(class: &Class, offset: usize) -> Result<Vec
   Ok(writer.finish())
 }
 
+pub(crate) fn encode_field_at_offset(field: &Field, offset: usize) -> Result<Vec<u8>> {
+  let mut writer = Writer::new(offset);
+  write_field(&mut writer, field)?;
+  Ok(writer.finish())
+}
+
 pub(crate) struct ArrayRanges {
   pub elements: Vec<Range<usize>>,
   pub class_hashes: Option<Range<usize>>,

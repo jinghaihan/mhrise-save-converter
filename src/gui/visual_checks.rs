@@ -116,6 +116,25 @@ pub fn run() {
   capture(&mut cx, handle, "slots");
 
   cx.update_window(handle, |_, window, cx| {
+    window.click(("hunter-name", 0usize), cx);
+    window.press("cmd-a", cx);
+    window.input("Renamed", cx);
+    assert_eq!(view.read(cx).slot_names[0].read(cx).value().as_str(), "Renamed");
+  })
+  .unwrap();
+  cx.update(|cx| {
+    assert_eq!(view.read(cx).model.renamed_slots[0].as_deref(), Some("Renamed"));
+    assert!(view.read(cx).model.can_save_slots());
+  });
+  cx.update_window(handle, |_, window, cx| {
+    window.click(("hunter-name", 0usize), cx);
+    window.press("cmd-a", cx);
+    window.input("Hunter 1", cx);
+  })
+  .unwrap();
+  cx.update(|cx| assert!(!view.read(cx).model.can_save_slots()));
+
+  cx.update_window(handle, |_, window, cx| {
     window.click(("down", 0usize), cx);
     assert_eq!(view.read(cx).model.slot_order, [2, 1, 3]);
     assert!(view.read(cx).model.can_save_slots());
@@ -147,6 +166,28 @@ pub fn run() {
   })
   .unwrap();
   capture(&mut cx, handle, "slots-dark");
+
+  cx.update_window(handle, |_, window, cx| {
+    view.update(cx, |this, cx| {
+      this.model.source = "destination-save".into();
+      this.model.output = "imported-save".into();
+      this.model.slots_key = Some(this.model.slot_input_key());
+      this.model.request_hunter_import(0, PathBuf::from("character.hunter"));
+      this.after_command(window, cx);
+    });
+  })
+  .unwrap();
+  cx.update_window(handle, |_, window, cx| {
+    window.render_frame(cx);
+    assert!(window.find("cancel").visible());
+  })
+  .unwrap();
+  capture(&mut cx, handle, "import-confirmation");
+  cx.update_window(handle, |_, window, cx| {
+    window.click("cancel", cx);
+    assert!(view.read(cx).model.worker.is_none());
+  })
+  .unwrap();
 
   let (sender, receiver) = std::sync::mpsc::channel();
   cx.update_window(handle, |_, window, cx| {
