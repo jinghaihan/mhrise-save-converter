@@ -476,7 +476,7 @@ impl GuiView {
               .flex_shrink_0()
               .child(
                 Button::new(("up", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(IconName::ArrowUp)
                   .tooltip("Move up")
@@ -488,7 +488,7 @@ impl GuiView {
               )
               .child(
                 Button::new(("down", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(IconName::ArrowDown)
                   .tooltip("Move down")
@@ -500,7 +500,7 @@ impl GuiView {
               )
               .child(
                 Button::new(("export", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(assets::IconName::Download)
                   .tooltip(if self.model.renamed_slots[original].is_some() {
@@ -515,7 +515,7 @@ impl GuiView {
               )
               .child(
                 Button::new(("import", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(assets::IconName::Upload)
                   .tooltip(if self.model.can_save_slots() {
@@ -530,7 +530,7 @@ impl GuiView {
               )
               .child(
                 Button::new(("delete", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(assets::IconName::Trash)
                   .tooltip("Delete character")
