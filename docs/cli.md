@@ -47,6 +47,14 @@ mhrise-save export-slot /path/to/save /path/to/character.hunter --slot 1 --steam
 
 Omit the Steam ID for Switch saves. Only the selected character, its selection-screen summary, and its album are exported. The ZIP package uses the `.hunter` extension and is not encrypted. Source files and existing exports are never overwritten.
 
+### Import a hunter package
+
+```sh
+mhrise-save import-slot character.hunter /path/to/destination-save /path/to/new-save --slot 3 --steamid64 <DESTINATION_STEAMID64>
+```
+
+Steam and Switch packages must be imported into the same platform. Add `--replace` to replace an occupied slot. Other hunters and unrelated files are preserved. The source save is never modified; output must be a new directory outside it. A hunter already present in another slot cannot be imported again.
+
 ## Switch → Steam
 
 Use an existing Steam save as the target template when possible. It provides the destination schema, platform settings, metadata, and Curve Index:

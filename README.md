@@ -40,6 +40,8 @@ The original save remains unchanged. Click **Read save** again to discard unsave
 
 Use **Export** in a slot's **Actions** to save that character and its album as a portable `.hunter` ZIP package. The package is not encrypted; sharing it shares the character data.
 
+Open the destination save in **Manage slots**, choose a new output folder, then use **Import** on an empty or occupied slot. Confirm replacement if occupied. Imports support the same platform and rebind Steam hunters to the destination account. Other characters stay unchanged.
+
 ## More help
 
 - [CLI commands, Steam IDs, and save locations](docs/cli.md)

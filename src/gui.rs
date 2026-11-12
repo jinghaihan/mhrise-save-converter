@@ -20,7 +20,7 @@ use mhrise_save_converter::conversion::{
   convert_path_with_progress, preflight_path,
 };
 use mhrise_save_converter::slots::{
-  SlotInspection, SlotOptions, SlotSummary, edit_slots, export_hunter, inspect_slots,
+  SlotInspection, SlotOptions, SlotSummary, edit_slots, export_hunter, import_hunter, inspect_slots,
 };
 
 type SlotInputKey = (String, String, String);
@@ -45,6 +45,15 @@ struct PendingSlotDeletion {
   order: [u8; 3],
   index: usize,
   name: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingHunterImport {
+  key: SlotInputKey,
+  package: PathBuf,
+  output: PathBuf,
+  index: usize,
+  name: Option<String>,
 }
 
 enum WorkerEvent {
@@ -75,6 +84,7 @@ pub struct GuiModel {
   slot_order: [u8; 3],
   deleted_slots: [bool; 3],
   pending_slot_deletion: Option<PendingSlotDeletion>,
+  pending_hunter_import: Option<PendingHunterImport>,
   source: String,
   output: String,
   target_reference: String,
@@ -101,6 +111,7 @@ impl Default for GuiModel {
       slot_order: [1, 2, 3],
       deleted_slots: [false; 3],
       pending_slot_deletion: None,
+      pending_hunter_import: None,
       source: String::new(),
       output: String::new(),
       target_reference: String::new(),
@@ -316,6 +327,74 @@ impl GuiModel {
       let result = export_hunter(&source, &output, slot, options)
         .map(|()| vec![output])
         .map_err(|error| format!("{error:#}"));
+      let _ = sender.send(WorkerEvent::Finished(result));
+    });
+  }
+
+  fn request_hunter_import(&mut self, index: usize, package: PathBuf) {
+    if index >= 3
+      || self.worker.is_some()
+      || self.can_save_slots()
+      || self.slots_key.as_ref() != Some(&self.slot_input_key())
+    {
+      return;
+    }
+    let (_, output) = match self.paths() {
+      Ok(paths) => paths,
+      Err(error) => {
+        self.status = error;
+        return;
+      }
+    };
+    let pending = PendingHunterImport {
+      key: self.slot_input_key(),
+      package,
+      output,
+      index,
+      name: self.slot_character(index).and_then(|slot| slot.name.clone()),
+    };
+    if pending.name.is_some() {
+      self.pending_hunter_import = Some(pending);
+    } else {
+      self.confirm_hunter_import(pending);
+    }
+  }
+
+  fn confirm_hunter_import(&mut self, pending: PendingHunterImport) {
+    if self.worker.is_some()
+      || self.can_save_slots()
+      || pending.key != self.slot_input_key()
+      || self.slots_key.as_ref() != Some(&pending.key)
+      || self.slot_character(pending.index).and_then(|slot| slot.name.as_ref())
+        != pending.name.as_ref()
+      || Path::new(self.output.trim()) != pending.output
+    {
+      return;
+    }
+    let options = match self.slot_options() {
+      Ok(options) => options,
+      Err(error) => {
+        self.status = error;
+        return;
+      }
+    };
+    let source = PathBuf::from(self.source.trim());
+    let (sender, receiver) = mpsc::channel();
+    self.output_directory = Some(pending.output.clone());
+    self.preflight = None;
+    self.progress = None;
+    self.status = "Importing hunter…".into();
+    self.worker = Some(receiver);
+    thread::spawn(move || {
+      let result = import_hunter(
+        &pending.package,
+        &source,
+        &pending.output,
+        pending.index as u8 + 1,
+        options,
+        pending.name.is_some(),
+      )
+      .map_err(|error| format!("{error:#}"));
       let _ = sender.send(WorkerEvent::Finished(result));
     });
   }
@@ -753,6 +832,25 @@ mod tests {
     };
     app.slots_key = Some(app.slot_input_key());
     app
+  }
+
+  #[test]
+  fn occupied_import_requires_confirmation_and_rejects_stale_approval() {
+    let mut app = slot_deletion_app();
+    app.source = "source-save".into();
+    app.slots_key = Some(app.slot_input_key());
+    app.output = "new-save".into();
+    app.request_hunter_import(0, PathBuf::from("hunter.hunter"));
+    let pending = app.pending_hunter_import.take().unwrap();
+    assert_eq!(pending.name.as_deref(), Some("Hunter 1"));
+    assert!(app.worker.is_none());
+    app.output = "different-output".into();
+    app.confirm_hunter_import(pending);
+    assert!(app.worker.is_none());
+    app.move_slot(0, false);
+    app.request_hunter_import(2, PathBuf::from("hunter.hunter"));
+    assert!(app.pending_hunter_import.is_none());
+    assert!(app.worker.is_none(), "import must not discard pending slot edits");
   }
 
   #[test]

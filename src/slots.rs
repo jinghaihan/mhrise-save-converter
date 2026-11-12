@@ -2,7 +2,7 @@
 
 mod empty_summary;
 mod hunter;
-pub use hunter::export_hunter;
+pub use hunter::{export_hunter, import_hunter};
 
 use std::{
   collections::BTreeMap,
@@ -866,6 +866,175 @@ mod tests {
     .unwrap();
     fs::write(path.join("unrecognized-file.dat"), b"preserve unknown file exactly").unwrap();
     options
+  }
+
+  #[test]
+  fn hunter_import_resigns_initialized_steam_owner_identity() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let source_options = fixture(&source, TargetPlatform::Steam, &[1]);
+    let source_identity = hex_literal::hex!("020800001168b2e6e9124a2901001001");
+    let target_identity = hex_literal::hex!("02080000ee62b5543412000001001001");
+    let mut original = load_bundle(&source, source_options).unwrap();
+    let mut role = original.roles[&1].1.clone();
+    role.entries.push(NativeClass {
+      native_hash: HUNTER_RECORD,
+      class: Class {
+        hash: 42,
+        fields: vec![Field {
+          hash: 0x0737_8f29,
+          field_type: 17,
+          value: FieldValue::Class(Box::new(Class {
+            hash: 43,
+            fields: vec![Field {
+              hash: 0xef50_95c4,
+              field_type: -1,
+              value: FieldValue::Array(Array {
+                member_type: 4,
+                member_size: 1,
+                array_type: 0,
+                class_hashes: None,
+                values: source_identity
+                  .iter()
+                  .map(|byte| ArrayValue::Scalar(vec![*byte]))
+                  .collect(),
+              }),
+            }],
+          })),
+        }],
+      },
+    });
+    let plain = role.encode_at_offset(16).unwrap();
+    fs::write(source.join(role_filename(1)), repack(&plain, &original).unwrap()).unwrap();
+    let destination = temp.0.join("target");
+    let old_options = fixture(&destination, TargetPlatform::Steam, &[2]);
+    let target_options = SlotOptions { steamid64: Some(76561197960270388), curve_index: Some(17) };
+    let mut target = load_bundle(&destination, old_options).unwrap();
+    target.options = target_options;
+    for (name, bytes) in &target.files {
+      if is_core_filename(name) {
+        let plain = unpack_payload(
+          bytes,
+          checked_header(bytes).unwrap(),
+          old_options.steamid64,
+          old_options.curve_index,
+        )
+        .unwrap();
+        fs::write(destination.join(name), repack(&plain, &target).unwrap()).unwrap();
+      }
+    }
+    let package = temp.0.join("account.hunter");
+    export_hunter(&source, &package, 1, source_options).unwrap();
+    let output = temp.0.join("imported");
+    import_hunter(&package, &destination, &output, 3, target_options, false).unwrap();
+    let imported = load_bundle(&output, target_options).unwrap();
+    let paths: &[&[u32]] = &[&[HUNTER_RECORD, 0x0737_8f29, 0xef50_95c4]];
+    let ranges = crate::payload::byte_array_ranges(&imported.roles[&3].0, 16, paths).unwrap();
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(&imported.roles[&3].0[ranges[0].1.clone()], &target_identity);
+    original = load_bundle(&source, source_options).unwrap();
+    let ranges = crate::payload::byte_array_ranges(&original.roles[&1].0, 16, paths).unwrap();
+    assert_eq!(&original.roles[&1].0[ranges[0].1.clone()], &source_identity);
+  }
+
+  #[test]
+  fn hunter_import_moves_only_selected_hunter_and_preserves_destination() {
+    for platform in [TargetPlatform::Steam, TargetPlatform::NintendoSwitch] {
+      let temp = TestDirectory::new();
+      let source = temp.0.join("source");
+      let destination = temp.0.join("destination");
+      let options = fixture(&source, platform, &[1]);
+      fixture(&destination, platform, &[2]);
+      let original = load_bundle(&source, options).unwrap();
+      let before = load_bundle(&destination, options).unwrap();
+      let package = temp.0.join("hunter.hunter");
+      export_hunter(&source, &package, 1, options).unwrap();
+      let output = temp.0.join("imported");
+      import_hunter(&package, &destination, &output, 3, options, false).unwrap();
+      let imported = load_bundle(&output, options).unwrap();
+      assert_eq!(imported.inspection.slots[2].name.as_deref(), Some("Hunter 1"));
+      assert_eq!(imported.roles[&3].1, {
+        let plain = move_role(
+          &original.roles[&1].0,
+          &original.roles[&1].1,
+          class_stream_offset(imported.inspection.platform),
+          1,
+          3,
+        )
+        .unwrap();
+        SavePayload::parse_at_offset(&plain, class_stream_offset(imported.inspection.platform))
+          .unwrap()
+      });
+      assert_eq!(imported.files[&role_filename(2)], before.files[&role_filename(2)]);
+      assert_eq!(imported.files["SS2_data338Slot.bin"], before.files["SS2_data338Slot.bin"]);
+      assert_eq!(imported.files["unrecognized-file.dat"], before.files["unrecognized-file.dat"]);
+      assert!(imported.files.contains_key("SS3_data338Slot.bin"));
+      assert!(!imported.files.contains_key("SS1_data338Slot.bin"));
+      assert_eq!(load_bundle(&source, options).unwrap().files, original.files);
+      assert_eq!(load_bundle(&destination, options).unwrap().files, before.files);
+    }
+  }
+
+  #[test]
+  fn hunter_import_requires_replacement_and_rejects_duplicates_and_wrong_platforms() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[1]);
+    let package = temp.0.join("hunter.hunter");
+    export_hunter(&source, &package, 1, options).unwrap();
+    let output = temp.0.join("output");
+    assert!(
+      import_hunter(&package, &source, &output, 1, options, false)
+        .unwrap_err()
+        .to_string()
+        .contains("occupied")
+    );
+    assert!(
+      import_hunter(&package, &source, &output, 2, options, false)
+        .unwrap_err()
+        .to_string()
+        .contains("already exists")
+    );
+    assert!(!output.exists());
+    import_hunter(&package, &source, &output, 1, options, true).unwrap();
+    let steam = temp.0.join("steam");
+    let steam_options = fixture(&steam, TargetPlatform::Steam, &[]);
+    let bad = temp.0.join("bad");
+    assert!(
+      import_hunter(&package, &steam, &bad, 1, steam_options, false)
+        .unwrap_err()
+        .to_string()
+        .contains("same platform")
+    );
+    assert!(!bad.exists());
+  }
+
+  #[test]
+  fn hunter_import_rejects_untrusted_archives_without_writing_output() {
+    use std::io::Write;
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[]);
+    for (index, name) in [
+      "../outside",
+      "/absolute",
+      "photos/../../outside",
+      "photos/sub/file",
+      "unexpected.bin",
+      "manifest.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+      let package = temp.0.join(format!("bad{index}.hunter"));
+      let mut zip = zip::ZipWriter::new(fs::File::create(&package).unwrap());
+      zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+      zip.write_all(b"invalid").unwrap();
+      zip.finish().unwrap();
+      let output = temp.0.join(format!("output{index}"));
+      assert!(import_hunter(&package, &source, &output, 1, options, false).is_err());
+      assert!(!output.exists());
+    }
   }
 
   #[test]

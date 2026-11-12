@@ -196,7 +196,57 @@ impl GuiView {
     cx.notify();
   }
 
+  fn import_slot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    if self.busy() || self.model.can_save_slots() {
+      return;
+    }
+    if self.model.output.trim().is_empty() {
+      self.model.status = "Choose an output directory first.".into();
+      cx.notify();
+      return;
+    }
+    self.picking_folder = true;
+    cx.spawn_in(window, async move |view, cx| {
+      let selected =
+        rfd::AsyncFileDialog::new().add_filter("Hunter package", &["hunter"]).pick_file().await;
+      let _ = cx.update(|window, cx| {
+        let _ = view.update(cx, |this, cx| {
+          this.picking_folder = false;
+          if let Some(file) = selected {
+            this.model.request_hunter_import(index, file.path().to_path_buf());
+            this.after_command(window, cx);
+          }
+          cx.notify();
+        });
+      });
+    })
+    .detach();
+    cx.notify();
+  }
+
   fn open_confirmations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if let Some(pending) = self.model.pending_hunter_import.take() {
+      let view = cx.weak_entity();
+      window.open_alert_dialog(cx, move |dialog, _, _| {
+        let pending = pending.clone();
+        let view = view.clone();
+        dialog.title("Replace character?").width(px(420.))
+          .button_props(DialogButtonProps::default().show_cancel(true).ok_text("Import"))
+          .child(format!("Slot {} · {}", pending.index + 1, pending.name.as_deref().unwrap_or("Empty")))
+          .child("The imported character and album replace this slot in the output save. The source stays unchanged.")
+          .on_ok(move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+              this.model.confirm_hunter_import(pending.clone());
+              let view = cx.weak_entity();
+              window.on_next_frame(move |window, cx| {
+                let _ = view.update(cx, |this, cx| this.after_command(window, cx));
+              });
+              cx.notify();
+            });
+            true
+          })
+      });
+    }
     if let Some(pending) = self.model.pending_conversion.take() {
       let view = cx.weak_entity();
       window.open_alert_dialog(cx, move |dialog, _, _| {
@@ -313,7 +363,7 @@ impl GuiView {
           .child(div().w(px(64.)).child("Slot"))
           .child(div().flex_1().child("Character"))
           .child(div().w(px(140.)).child("Progress"))
-          .child(div().w(px(204.)).child("Actions")),
+          .child(div().w(px(264.)).child("Actions")),
       );
     for index in 0..3 {
       let slot = self.model.slot_character(index);
@@ -368,7 +418,7 @@ impl GuiView {
               .flex()
               .items_center()
               .gap_1()
-              .w(px(204.))
+              .w(px(264.))
               .flex_shrink_0()
               .child(
                 Button::new(("up", index))
@@ -402,6 +452,21 @@ impl GuiView {
                   .disabled(busy || !occupied)
                   .on_click(
                     cx.listener(move |this, _, window, cx| this.export_slot(index, window, cx)),
+                  ),
+              )
+              .child(
+                Button::new(("import", index))
+                  .ghost()
+                  .small()
+                  .label("Import")
+                  .tooltip(if self.model.can_save_slots() {
+                    "Save slot changes before importing"
+                  } else {
+                    "Import a .hunter package into this slot"
+                  })
+                  .disabled(busy || self.model.can_save_slots())
+                  .on_click(
+                    cx.listener(move |this, _, window, cx| this.import_slot(index, window, cx)),
                   ),
               )
               .child(
