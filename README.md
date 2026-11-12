@@ -38,6 +38,8 @@ Source and target saves remain unchanged. Existing output files require confirma
 
 The original save remains unchanged. Click **Read save** again to discard unsaved changes.
 
+Use **Export** in a slot's **Actions** to save that character and its album as a portable `.hunter` ZIP package. The package is not encrypted; sharing it shares the character data.
+
 ## More help
 
 - [CLI commands, Steam IDs, and save locations](docs/cli.md)

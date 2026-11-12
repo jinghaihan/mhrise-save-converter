@@ -39,6 +39,14 @@ The output directory must not already exist, its parent must exist, and it must 
 
 The CLI currently supports inspection and pairwise swaps only. For repeated reordering or confirmed character deletion, use the GUI's **Manage slots** tab. Deletion marks a position empty without automatically shifting the remaining characters and applies only when **Save slots** writes a new output bundle. See [Character-slot safety and verification](slot-management.md) for validation and safety limits.
 
+## Export a hunter
+
+```bash
+mhrise-save export-slot /path/to/save /path/to/character.hunter --slot 1 --steamid64 <STEAMID64>
+```
+
+Omit the Steam ID for Switch saves. Only the selected character, its selection-screen summary, and its album are exported. The ZIP package uses the `.hunter` extension and is not encrypted. Source files and existing exports are never overwritten.
+
 ## Switch → Steam
 
 Use an existing Steam save as the target template when possible. It provides the destination schema, platform settings, metadata, and Curve Index:

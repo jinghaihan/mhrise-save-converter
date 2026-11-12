@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mhrise_save_converter::{
   conversion::{ConversionRequest, TargetPlatform, convert_path, find_curve_index, verify_file},
   discover::{discover_core_files, discover_save_files},
-  slots::{SlotOptions, inspect_slots, swap_slots},
+  slots::{SlotOptions, export_hunter, inspect_slots, swap_slots},
 };
 
 #[derive(Debug, Parser)]
@@ -17,6 +17,17 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+  /// Export an occupied slot and its photos to a portable .hunter package.
+  ExportSlot {
+    input: PathBuf,
+    output: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+    slot: u8,
+    #[arg(long)]
+    steamid64: Option<u64>,
+    #[arg(long)]
+    curve_index: Option<usize>,
+  },
   /// List the three character slots without changing files.
   Slots {
     input: PathBuf,
@@ -101,6 +112,11 @@ fn main() -> Result<()> {
   let cli = Cli::parse();
 
   match cli.command {
+    Command::ExportSlot { input, output, slot, steamid64, curve_index } => {
+      export_hunter(&input, &output, slot, SlotOptions { steamid64, curve_index })?;
+      println!("Exported slot {slot} to {}", output.display());
+      Ok(())
+    }
     Command::Slots { input, steamid64, curve_index } => {
       let report = inspect_slots(&input, SlotOptions { steamid64, curve_index })?;
       println!("Platform: {}", report.platform);

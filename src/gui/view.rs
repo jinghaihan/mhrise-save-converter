@@ -170,6 +170,32 @@ impl GuiView {
     cx.notify();
   }
 
+  fn export_slot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    if self.busy() || self.model.slot_character(index).is_none() {
+      return;
+    }
+    self.picking_folder = true;
+    cx.spawn_in(window, async move |view, cx| {
+      let selected = rfd::AsyncFileDialog::new()
+        .add_filter("Hunter package", &["hunter"])
+        .set_file_name(format!("Slot{}.hunter", index + 1))
+        .save_file()
+        .await;
+      let _ = cx.update(|window, cx| {
+        let _ = view.update(cx, |this, cx| {
+          this.picking_folder = false;
+          if let Some(file) = selected {
+            this.model.export_slot(index, file.path().to_path_buf());
+            this.after_command(window, cx);
+          }
+          cx.notify();
+        });
+      });
+    })
+    .detach();
+    cx.notify();
+  }
+
   fn open_confirmations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
     if let Some(pending) = self.model.pending_conversion.take() {
       let view = cx.weak_entity();
@@ -287,7 +313,7 @@ impl GuiView {
           .child(div().w(px(64.)).child("Slot"))
           .child(div().flex_1().child("Character"))
           .child(div().w(px(140.)).child("Progress"))
-          .child(div().w(px(148.)).child("Actions")),
+          .child(div().w(px(204.)).child("Actions")),
       );
     for index in 0..3 {
       let slot = self.model.slot_character(index);
@@ -342,7 +368,7 @@ impl GuiView {
               .flex()
               .items_center()
               .gap_1()
-              .w(px(148.))
+              .w(px(204.))
               .flex_shrink_0()
               .child(
                 Button::new(("up", index))
@@ -367,6 +393,16 @@ impl GuiView {
                     this.model.move_slot(index, false);
                     cx.notify();
                   })),
+              )
+              .child(
+                Button::new(("export", index))
+                  .ghost()
+                  .small()
+                  .label("Export")
+                  .disabled(busy || !occupied)
+                  .on_click(
+                    cx.listener(move |this, _, window, cx| this.export_slot(index, window, cx)),
+                  ),
               )
               .child(
                 Button::new(("delete", index))

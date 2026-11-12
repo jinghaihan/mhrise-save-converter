@@ -1,6 +1,8 @@
 //! Coordinated character-slot edits. Source files and account identities are never changed.
 
 mod empty_summary;
+mod hunter;
+pub use hunter::export_hunter;
 
 use std::{
   collections::BTreeMap,
@@ -864,6 +866,60 @@ mod tests {
     .unwrap();
     fs::write(path.join("unrecognized-file.dat"), b"preserve unknown file exactly").unwrap();
     options
+  }
+
+  #[test]
+  fn hunter_export_contains_only_selected_hunter_and_portable_photos() {
+    use std::io::{Cursor, Read};
+    for platform in [TargetPlatform::Steam, TargetPlatform::NintendoSwitch] {
+      let temp = TestDirectory::new();
+      let source = temp.0.join("source");
+      let options = fixture(&source, platform, &[1, 2]);
+      let before = load_bundle(&source, options).unwrap();
+      let output = temp.0.join("hunter.hunter");
+      export_hunter(&source, &output, 1, options).unwrap();
+      let mut archive = zip::ZipArchive::new(Cursor::new(fs::read(&output).unwrap())).unwrap();
+      assert_eq!(archive.len(), 4);
+      let names: Vec<_> = archive.file_names().map(|name| name.unwrap().into_owned()).collect();
+      assert_eq!(names, ["manifest.json", "photos/data338Slot.bin", "role.bin", "summary.bin"]);
+      let mut role = Vec::new();
+      archive.by_name("role.bin").unwrap().read_to_end(&mut role).unwrap();
+      assert_eq!(role, before.roles[&1].0);
+      let manifest: serde_json::Value =
+        serde_json::from_reader(archive.by_name("manifest.json").unwrap()).unwrap();
+      assert_eq!(manifest["version"], 1);
+      assert_eq!(manifest["source_slot"], 1);
+      assert_eq!(
+        manifest["platform"],
+        if platform == TargetPlatform::Steam { "steam" } else { "switch" }
+      );
+      let mut photo = Vec::new();
+      archive.by_name("photos/data338Slot.bin").unwrap().read_to_end(&mut photo).unwrap();
+      assert_eq!(parse_header(&photo).unwrap().raw_flags, 0);
+      checked_header(&photo).unwrap();
+      assert_eq!(load_bundle(&source, options).unwrap().files, before.files);
+    }
+  }
+
+  #[test]
+  fn hunter_export_rejects_empty_slots_unknown_photos_and_overwrites() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[1]);
+    let output = temp.0.join("hunter.hunter");
+    for slot in [0, 2, 4] {
+      assert!(export_hunter(&source, &output, slot, options).is_err());
+      assert!(!output.exists());
+    }
+    assert!(export_hunter(&source, &source.join("inside.hunter"), 1, options).is_err());
+    assert!(!source.join("inside.hunter").exists());
+    fs::write(&output, b"existing package").unwrap();
+    assert!(export_hunter(&source, &output, 1, options).is_err());
+    assert_eq!(fs::read(&output).unwrap(), b"existing package");
+    let unknown = temp.0.join("unknown.hunter");
+    fs::write(source.join("SS1_unknown.dat"), b"unknown photo format").unwrap();
+    assert!(export_hunter(&source, &unknown, 1, options).is_err());
+    assert!(!unknown.exists());
   }
 
   #[test]

@@ -27,6 +27,9 @@ rand = "0.10"
 rfd = { version = "0.15", optional = true }
 sha3 = "0.11"
 thiserror = "2.0"
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 
 [dev-dependencies]
 assert_cmd = "2.0"

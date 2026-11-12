@@ -20,7 +20,7 @@ use mhrise_save_converter::conversion::{
   convert_path_with_progress, preflight_path,
 };
 use mhrise_save_converter::slots::{
-  SlotInspection, SlotOptions, SlotSummary, edit_slots, inspect_slots,
+  SlotInspection, SlotOptions, SlotSummary, edit_slots, export_hunter, inspect_slots,
 };
 
 type SlotInputKey = (String, String, String);
@@ -287,6 +287,35 @@ impl GuiModel {
     thread::spawn(move || {
       let result =
         edit_slots(&source, &output, order, deleted, options).map_err(|error| format!("{error:#}"));
+      let _ = sender.send(WorkerEvent::Finished(result));
+    });
+  }
+
+  fn export_slot(&mut self, index: usize, output: PathBuf) {
+    if self.worker.is_some() || self.slots_key.as_ref() != Some(&self.slot_input_key()) {
+      return;
+    }
+    let Some(slot) = self.slot_character(index).map(|slot| slot.number) else {
+      return;
+    };
+    let options = match self.slot_options() {
+      Ok(options) => options,
+      Err(error) => {
+        self.status = error;
+        return;
+      }
+    };
+    let source = PathBuf::from(self.source.trim());
+    let (sender, receiver) = mpsc::channel();
+    self.output_directory = output.parent().map(Path::to_path_buf);
+    self.preflight = None;
+    self.progress = None;
+    self.status = "Exporting hunter…".into();
+    self.worker = Some(receiver);
+    thread::spawn(move || {
+      let result = export_hunter(&source, &output, slot, options)
+        .map(|()| vec![output])
+        .map_err(|error| format!("{error:#}"));
       let _ = sender.send(WorkerEvent::Finished(result));
     });
   }
