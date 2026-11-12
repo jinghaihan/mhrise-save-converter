@@ -15,6 +15,25 @@ const LABEL_WIDTH: f32 = 160.0;
 const BROWSE_WIDTH: f32 = 88.0;
 const SLOT_ROW_HEIGHT: f32 = 58.0;
 
+assets::icon_assets!(SlotIcons, [Download, Upload, Trash]);
+
+struct GuiAssets;
+
+impl AssetSource for GuiAssets {
+  fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+    match SlotIcons.load(path)? {
+      Some(icon) => Ok(Some(icon)),
+      None => assets::Assets.load(path),
+    }
+  }
+
+  fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+    let mut names = assets::Assets.list(path)?;
+    names.extend(SlotIcons.list(path)?);
+    Ok(names)
+  }
+}
+
 #[derive(Clone, Copy)]
 enum Field {
   Source,
@@ -391,7 +410,7 @@ impl GuiView {
           .child(div().w(px(64.)).child("Slot"))
           .child(div().flex_1().child("Character"))
           .child(div().w(px(140.)).child("Progress"))
-          .child(div().w(px(264.)).child("Actions")),
+          .child(div().w(px(164.)).child("Actions")),
       );
     for index in 0..3 {
       let slot = self.model.slot_character(index);
@@ -442,7 +461,6 @@ impl GuiView {
                 this.child(
                   Input::new(&self.slot_names[original])
                     .id(("hunter-name", original))
-                    .small()
                     .disabled(busy),
                 )
               })
@@ -454,7 +472,7 @@ impl GuiView {
               .flex()
               .items_center()
               .gap_1()
-              .w(px(264.))
+              .w(px(164.))
               .flex_shrink_0()
               .child(
                 Button::new(("up", index))
@@ -482,9 +500,9 @@ impl GuiView {
               )
               .child(
                 Button::new(("export", index))
-                  .ghost()
+                  .outline()
                   .small()
-                  .label("Export")
+                  .icon(assets::IconName::Download)
                   .tooltip(if self.model.renamed_slots[original].is_some() {
                     "Save name changes before exporting"
                   } else {
@@ -497,9 +515,9 @@ impl GuiView {
               )
               .child(
                 Button::new(("import", index))
-                  .ghost()
+                  .outline()
                   .small()
-                  .label("Import")
+                  .icon(assets::IconName::Upload)
                   .tooltip(if self.model.can_save_slots() {
                     "Save slot changes before importing"
                   } else {
@@ -512,9 +530,10 @@ impl GuiView {
               )
               .child(
                 Button::new(("delete", index))
-                  .ghost()
+                  .outline()
                   .small()
-                  .label("Delete")
+                  .icon(assets::IconName::Trash)
+                  .tooltip("Delete character")
                   .disabled(busy || !occupied)
                   .on_click(cx.listener(move |this, _, window, cx| {
                     this.model.request_slot_deletion(index);
@@ -722,7 +741,7 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 pub fn run() {
-  application().with_assets(assets::Assets).run(|cx| {
+  application().with_assets(GuiAssets).run(|cx| {
     init(cx);
     Theme::sync_system_appearance(None, cx);
     cx.on_window_closed(|cx, _| {

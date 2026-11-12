@@ -17,7 +17,7 @@ fn capture(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, name: &str) {
 pub fn run() {
   let mut cx = HeadlessAppContext::with_platform(
     gpui_kit::platform::current_platform(true).text_system(),
-    Arc::new(assets::Assets),
+    Arc::new(GuiAssets),
     gpui_kit::platform::current_headless_renderer,
   );
   cx.update(|cx| {
