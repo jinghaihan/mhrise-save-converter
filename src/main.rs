@@ -5,7 +5,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use mhrise_save_converter::{
   conversion::{ConversionRequest, TargetPlatform, convert_path, find_curve_index, verify_file},
   discover::{discover_core_files, discover_save_files},
-  slots::{SlotOptions, inspect_slots, swap_slots},
+  slots::{
+    SlotOptions, edit_slots_with_names, export_hunter, import_hunter, inspect_slots, swap_slots,
+  },
 };
 
 #[derive(Debug, Parser)]
@@ -17,6 +19,45 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+  /// Rename a hunter into a new save directory.
+  RenameSlot {
+    input: PathBuf,
+    output: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+    slot: u8,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    steamid64: Option<u64>,
+    #[arg(long)]
+    curve_index: Option<usize>,
+  },
+  /// Import a same-platform .hunter package into a new save directory.
+  ImportSlot {
+    package: PathBuf,
+    input: PathBuf,
+    output: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+    slot: u8,
+    #[arg(long)]
+    steamid64: Option<u64>,
+    #[arg(long)]
+    curve_index: Option<usize>,
+    /// Replace an occupied destination slot in the output save.
+    #[arg(long)]
+    replace: bool,
+  },
+  /// Export an occupied slot and its photos to a portable .hunter package.
+  ExportSlot {
+    input: PathBuf,
+    output: PathBuf,
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+    slot: u8,
+    #[arg(long)]
+    steamid64: Option<u64>,
+    #[arg(long)]
+    curve_index: Option<usize>,
+  },
   /// List the three character slots without changing files.
   Slots {
     input: PathBuf,
@@ -101,6 +142,37 @@ fn main() -> Result<()> {
   let cli = Cli::parse();
 
   match cli.command {
+    Command::RenameSlot { input, output, slot, name, steamid64, curve_index } => {
+      let mut names = [None, None, None];
+      names[usize::from(slot - 1)] = Some(name);
+      let files = edit_slots_with_names(
+        &input,
+        &output,
+        [1, 2, 3],
+        [false; 3],
+        names,
+        SlotOptions { steamid64, curve_index },
+      )?;
+      println!("Renamed slot {slot}: {} files written to {}", files.len(), output.display());
+      Ok(())
+    }
+    Command::ImportSlot { package, input, output, slot, steamid64, curve_index, replace } => {
+      let files = import_hunter(
+        &package,
+        &input,
+        &output,
+        slot,
+        SlotOptions { steamid64, curve_index },
+        replace,
+      )?;
+      println!("Imported slot {slot}: {} files written to {}", files.len(), output.display());
+      Ok(())
+    }
+    Command::ExportSlot { input, output, slot, steamid64, curve_index } => {
+      export_hunter(&input, &output, slot, SlotOptions { steamid64, curve_index })?;
+      println!("Exported slot {slot} to {}", output.display());
+      Ok(())
+    }
     Command::Slots { input, steamid64, curve_index } => {
       let report = inspect_slots(&input, SlotOptions { steamid64, curve_index })?;
       println!("Platform: {}", report.platform);

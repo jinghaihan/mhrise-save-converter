@@ -1,6 +1,9 @@
 //! Coordinated character-slot edits. Source files and account identities are never changed.
 
 mod empty_summary;
+mod hunter;
+mod rename;
+pub use hunter::{export_hunter, import_hunter};
 
 use std::{
   collections::BTreeMap,
@@ -117,6 +120,18 @@ pub fn edit_slots(
   deleted: [bool; 3],
   options: SlotOptions,
 ) -> Result<Vec<PathBuf>> {
+  edit_slots_with_names(input, output, order, deleted, [None, None, None], options)
+}
+
+/// Rename, move and delete hunters together. Both edit arrays refer to ORIGINAL slots.
+pub fn edit_slots_with_names(
+  input: &Path,
+  output: &Path,
+  order: [u8; 3],
+  deleted: [bool; 3],
+  names: [Option<String>; 3],
+  options: SlotOptions,
+) -> Result<Vec<PathBuf>> {
   let mut sorted = order;
   sorted.sort_unstable();
   ensure!(sorted == [1, 2, 3], "slot order must contain each position 1–3 exactly once");
@@ -134,12 +149,23 @@ pub fn edit_slots(
       index + 1
     );
   }
+  let mut changed = deleted;
+  for (index, name) in names.iter().enumerate() {
+    if deleted[index] {
+      continue;
+    }
+    if let Some(name) = name {
+      ensure!(bundle.inspection.slots[index].occupied(), "cannot rename an empty slot");
+      rename::validate_name(name)?;
+      changed[index] |= bundle.inspection.slots[index].name.as_ref() != Some(name);
+    }
+  }
   ensure!(
-    deleted.iter().any(|delete| *delete)
+    changed.iter().any(|changed| *changed)
       || order.iter().enumerate().any(|(to, from)| {
         usize::from(*from - 1) != to && bundle.inspection.slots[usize::from(*from - 1)].occupied()
       }),
-    "slot edit does not move or delete any character"
+    "slot edit does not move, delete or rename any character"
   );
   let offset = class_stream_offset(bundle.inspection.platform);
   let mut expected = bundle.system.clone();
@@ -172,6 +198,16 @@ pub fn edit_slots(
   } else {
     None
   };
+  for (index, name) in names.iter().enumerate() {
+    if !deleted[index]
+      && let Some(name) = name
+    {
+      let ArrayValue::Class(summary) = &mut hunters.values[index] else {
+        bail!("invalid hunter summary")
+      };
+      rename::set_summary_name(summary, name)?;
+    }
+  }
   hunters.values = order.map(|from| hunters.values[usize::from(from - 1)].clone()).to_vec();
   if let Some(hashes) = &mut hunters.class_hashes {
     *hashes = order.map(|from| hashes[usize::from(from - 1)]).to_vec();
@@ -186,17 +222,29 @@ pub fn edit_slots(
       }
     }
   }
-  let system_plain = rewrite_summaries(&bundle.system_plain, &expected, offset, order, deleted)?;
+  let system_plain = rewrite_summaries(&bundle.system_plain, &expected, offset, order, changed)?;
   let system_bytes = repack(&system_plain, &bundle)?;
   bundle.files.insert(SYSTEM_FILE.to_owned(), system_bytes);
 
   for (index, from) in order.iter().copied().enumerate() {
     let to = index as u8 + 1;
-    if from != to
+    let name = &names[usize::from(from - 1)];
+    if (from != to || name.is_some())
       && !deleted[usize::from(from - 1)]
       && let Some((plain, role)) = bundle.roles.get(&from)
     {
-      let moved = move_role(plain, role, offset, from, to)?;
+      let moved = if let Some(name) = name {
+        let (renamed, role) = rename::rename_role(
+          plain,
+          role,
+          offset,
+          bundle.inspection.slots[usize::from(from - 1)].name.as_deref().unwrap(),
+          name,
+        )?;
+        move_role(&renamed, &role, offset, from, to)?
+      } else {
+        move_role(plain, role, offset, from, to)?
+      };
       let packed = repack(&moved, &bundle)?;
       // Retain the source name until the single simultaneous filename permutation below.
       bundle.files.insert(role_filename(from), packed);
@@ -466,7 +514,7 @@ fn rewrite_summaries(
   expected: &SavePayload,
   offset: usize,
   order: [u8; 3],
-  deleted: [bool; 3],
+  changed: [bool; 3],
 ) -> Result<Vec<u8>> {
   let ranges = array_ranges(plain, offset, &[LOAD_INFO, HUNTERS])?;
   ensure!(ranges.elements.len() == 3, "expected exactly three serialized summaries");
@@ -492,7 +540,7 @@ fn rewrite_summaries(
   // summaries, preserving the untouched summary and every surrounding byte.
   patched.truncate(ranges.elements[0].start);
   for (index, value) in hunters.values.iter().enumerate() {
-    if usize::from(order[index] - 1) != index || deleted[usize::from(order[index] - 1)] {
+    if usize::from(order[index] - 1) != index || changed[usize::from(order[index] - 1)] {
       let ArrayValue::Class(class) = value else {
         bail!("hunter summary is not a class");
       };
@@ -502,7 +550,7 @@ fn rewrite_summaries(
     }
   }
   patched.extend_from_slice(&plain[ranges.elements[2].end..]);
-  if deleted.iter().any(|delete| *delete)
+  if changed.iter().any(|changed| *changed)
     && !SavePayload::parse_at_offset(&patched, offset).is_ok_and(|parsed| parsed == *expected)
   {
     // A smaller empty summary can shift the alignment of following fields.
@@ -864,6 +912,342 @@ mod tests {
     .unwrap();
     fs::write(path.join("unrecognized-file.dat"), b"preserve unknown file exactly").unwrap();
     options
+  }
+
+  #[test]
+  fn rename_updates_only_selected_summary_and_owned_guild_card() {
+    for platform in [TargetPlatform::Steam, TargetPlatform::NintendoSwitch] {
+      let temp = TestDirectory::new();
+      let source = temp.0.join("source");
+      let options = fixture(&source, platform, &[1, 2]);
+      add_owner_name(&source, options, 1, "Hunter 1");
+      let original = load_bundle(&source, options).unwrap();
+      for (index, name) in ["A", "猎人小明", "New Hunter"].iter().enumerate() {
+        let output = temp.0.join(format!("renamed{index}"));
+        edit_slots_with_names(
+          &source,
+          &output,
+          [1, 2, 3],
+          [false; 3],
+          [Some((*name).into()), None, None],
+          options,
+        )
+        .unwrap();
+        let renamed = load_bundle(&output, options).unwrap();
+        assert_eq!(renamed.inspection.slots[0].name.as_deref(), Some(*name));
+        let mut expected = original.roles[&1].1.clone();
+        let FieldValue::Class(owner) =
+          &mut field_mut(&mut expected, 0x8c6f_b4c6, 0xd51b_2c9f).unwrap().value
+        else {
+          unreachable!()
+        };
+        owner.fields[0].value = FieldValue::String(name.encode_utf16().collect());
+        assert_eq!(
+          renamed.roles[&1].1, expected,
+          "other cards and historical names must remain exact"
+        );
+        for (name, bytes) in &original.files {
+          if name != SYSTEM_FILE && name != &role_filename(1) {
+            assert_eq!(&renamed.files[name], bytes);
+          }
+        }
+      }
+      let moved = temp.0.join("moved");
+      edit_slots_with_names(
+        &source,
+        &moved,
+        [3, 2, 1],
+        [false, true, false],
+        [Some("Moved".into()), None, None],
+        options,
+      )
+      .unwrap();
+      let moved = load_bundle(&moved, options).unwrap();
+      assert_eq!(moved.inspection.slots[2].name.as_deref(), Some("Moved"));
+      assert!(!moved.roles.contains_key(&1));
+      assert!(!moved.roles.contains_key(&2));
+      validate_role_position(&moved.roles[&3].1, 3).unwrap();
+      assert_eq!(load_bundle(&source, options).unwrap().files, original.files);
+    }
+  }
+
+  fn add_owner_name(path: &Path, options: SlotOptions, slot: u8, name: &str) {
+    let bundle = load_bundle(path, options).unwrap();
+    let mut role = bundle.roles[&slot].1.clone();
+    let card = Class { hash: 0x4454_1321, fields: vec![text(0x02bb_0110, name), text(99, name)] };
+    role.entries.push(NativeClass {
+      native_hash: 0x8c6f_b4c6,
+      class: Class {
+        hash: 0xea1f_a4f9,
+        fields: vec![
+          Field {
+            hash: 0xd51b_2c9f,
+            field_type: 17,
+            value: FieldValue::Class(Box::new(card.clone())),
+          },
+          Field { hash: 98, field_type: 17, value: FieldValue::Class(Box::new(card)) },
+        ],
+      },
+    });
+    let plain = role.encode_at_offset(class_stream_offset(bundle.inspection.platform)).unwrap();
+    fs::write(path.join(role_filename(slot)), repack(&plain, &bundle).unwrap()).unwrap();
+  }
+
+  #[test]
+  fn rename_rejects_invalid_names_empty_slots_and_ambiguous_owner_names() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[1]);
+    add_owner_name(&source, options, 1, "different");
+    for name in ["", "   ", "line\nbreak", "embedded\0nul", "1234567890123", "Valid"] {
+      let output = temp.0.join("invalid");
+      assert!(
+        edit_slots_with_names(
+          &source,
+          &output,
+          [1, 2, 3],
+          [false; 3],
+          [Some(name.into()), None, None],
+          options
+        )
+        .is_err()
+      );
+      assert!(!output.exists());
+    }
+    assert!(
+      edit_slots_with_names(
+        &source,
+        &temp.0.join("empty"),
+        [1, 2, 3],
+        [false; 3],
+        [None, Some("Empty".into()), None],
+        options
+      )
+      .is_err()
+    );
+  }
+
+  #[test]
+  fn hunter_import_resigns_initialized_steam_owner_identity() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let source_options = fixture(&source, TargetPlatform::Steam, &[1]);
+    let source_identity = hex_literal::hex!("020800001168b2e6e9124a2901001001");
+    let target_identity = hex_literal::hex!("02080000ee62b5543412000001001001");
+    let mut original = load_bundle(&source, source_options).unwrap();
+    let mut role = original.roles[&1].1.clone();
+    role.entries.push(NativeClass {
+      native_hash: HUNTER_RECORD,
+      class: Class {
+        hash: 42,
+        fields: vec![Field {
+          hash: 0x0737_8f29,
+          field_type: 17,
+          value: FieldValue::Class(Box::new(Class {
+            hash: 43,
+            fields: vec![Field {
+              hash: 0xef50_95c4,
+              field_type: -1,
+              value: FieldValue::Array(Array {
+                member_type: 4,
+                member_size: 1,
+                array_type: 0,
+                class_hashes: None,
+                values: source_identity
+                  .iter()
+                  .map(|byte| ArrayValue::Scalar(vec![*byte]))
+                  .collect(),
+              }),
+            }],
+          })),
+        }],
+      },
+    });
+    let plain = role.encode_at_offset(16).unwrap();
+    fs::write(source.join(role_filename(1)), repack(&plain, &original).unwrap()).unwrap();
+    let destination = temp.0.join("target");
+    let old_options = fixture(&destination, TargetPlatform::Steam, &[2]);
+    let target_options = SlotOptions { steamid64: Some(76561197960270388), curve_index: Some(17) };
+    let mut target = load_bundle(&destination, old_options).unwrap();
+    target.options = target_options;
+    for (name, bytes) in &target.files {
+      if is_core_filename(name) {
+        let plain = unpack_payload(
+          bytes,
+          checked_header(bytes).unwrap(),
+          old_options.steamid64,
+          old_options.curve_index,
+        )
+        .unwrap();
+        fs::write(destination.join(name), repack(&plain, &target).unwrap()).unwrap();
+      }
+    }
+    let package = temp.0.join("account.hunter");
+    export_hunter(&source, &package, 1, source_options).unwrap();
+    let output = temp.0.join("imported");
+    import_hunter(&package, &destination, &output, 3, target_options, false).unwrap();
+    let imported = load_bundle(&output, target_options).unwrap();
+    let paths: &[&[u32]] = &[&[HUNTER_RECORD, 0x0737_8f29, 0xef50_95c4]];
+    let ranges = crate::payload::byte_array_ranges(&imported.roles[&3].0, 16, paths).unwrap();
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(&imported.roles[&3].0[ranges[0].1.clone()], &target_identity);
+    original = load_bundle(&source, source_options).unwrap();
+    let ranges = crate::payload::byte_array_ranges(&original.roles[&1].0, 16, paths).unwrap();
+    assert_eq!(&original.roles[&1].0[ranges[0].1.clone()], &source_identity);
+  }
+
+  #[test]
+  fn hunter_import_moves_only_selected_hunter_and_preserves_destination() {
+    for platform in [TargetPlatform::Steam, TargetPlatform::NintendoSwitch] {
+      let temp = TestDirectory::new();
+      let source = temp.0.join("source");
+      let destination = temp.0.join("destination");
+      let options = fixture(&source, platform, &[1]);
+      fixture(&destination, platform, &[2]);
+      let original = load_bundle(&source, options).unwrap();
+      let before = load_bundle(&destination, options).unwrap();
+      let package = temp.0.join("hunter.hunter");
+      export_hunter(&source, &package, 1, options).unwrap();
+      let output = temp.0.join("imported");
+      import_hunter(&package, &destination, &output, 3, options, false).unwrap();
+      let imported = load_bundle(&output, options).unwrap();
+      assert_eq!(imported.inspection.slots[2].name.as_deref(), Some("Hunter 1"));
+      assert_eq!(imported.roles[&3].1, {
+        let plain = move_role(
+          &original.roles[&1].0,
+          &original.roles[&1].1,
+          class_stream_offset(imported.inspection.platform),
+          1,
+          3,
+        )
+        .unwrap();
+        SavePayload::parse_at_offset(&plain, class_stream_offset(imported.inspection.platform))
+          .unwrap()
+      });
+      assert_eq!(imported.files[&role_filename(2)], before.files[&role_filename(2)]);
+      assert_eq!(imported.files["SS2_data338Slot.bin"], before.files["SS2_data338Slot.bin"]);
+      assert_eq!(imported.files["unrecognized-file.dat"], before.files["unrecognized-file.dat"]);
+      assert!(imported.files.contains_key("SS3_data338Slot.bin"));
+      assert!(!imported.files.contains_key("SS1_data338Slot.bin"));
+      assert_eq!(load_bundle(&source, options).unwrap().files, original.files);
+      assert_eq!(load_bundle(&destination, options).unwrap().files, before.files);
+    }
+  }
+
+  #[test]
+  fn hunter_import_requires_replacement_and_rejects_duplicates_and_wrong_platforms() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[1]);
+    let package = temp.0.join("hunter.hunter");
+    export_hunter(&source, &package, 1, options).unwrap();
+    let output = temp.0.join("output");
+    assert!(
+      import_hunter(&package, &source, &output, 1, options, false)
+        .unwrap_err()
+        .to_string()
+        .contains("occupied")
+    );
+    assert!(
+      import_hunter(&package, &source, &output, 2, options, false)
+        .unwrap_err()
+        .to_string()
+        .contains("already exists")
+    );
+    assert!(!output.exists());
+    import_hunter(&package, &source, &output, 1, options, true).unwrap();
+    let steam = temp.0.join("steam");
+    let steam_options = fixture(&steam, TargetPlatform::Steam, &[]);
+    let bad = temp.0.join("bad");
+    assert!(
+      import_hunter(&package, &steam, &bad, 1, steam_options, false)
+        .unwrap_err()
+        .to_string()
+        .contains("same platform")
+    );
+    assert!(!bad.exists());
+  }
+
+  #[test]
+  fn hunter_import_rejects_untrusted_archives_without_writing_output() {
+    use std::io::Write;
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[]);
+    for (index, name) in [
+      "../outside",
+      "/absolute",
+      "photos/../../outside",
+      "photos/sub/file",
+      "unexpected.bin",
+      "manifest.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+      let package = temp.0.join(format!("bad{index}.hunter"));
+      let mut zip = zip::ZipWriter::new(fs::File::create(&package).unwrap());
+      zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+      zip.write_all(b"invalid").unwrap();
+      zip.finish().unwrap();
+      let output = temp.0.join(format!("output{index}"));
+      assert!(import_hunter(&package, &source, &output, 1, options, false).is_err());
+      assert!(!output.exists());
+    }
+  }
+
+  #[test]
+  fn hunter_export_contains_only_selected_hunter_and_portable_photos() {
+    use std::io::{Cursor, Read};
+    for platform in [TargetPlatform::Steam, TargetPlatform::NintendoSwitch] {
+      let temp = TestDirectory::new();
+      let source = temp.0.join("source");
+      let options = fixture(&source, platform, &[1, 2]);
+      let before = load_bundle(&source, options).unwrap();
+      let output = temp.0.join("hunter.hunter");
+      export_hunter(&source, &output, 1, options).unwrap();
+      let mut archive = zip::ZipArchive::new(Cursor::new(fs::read(&output).unwrap())).unwrap();
+      assert_eq!(archive.len(), 4);
+      let names: Vec<_> = archive.file_names().map(|name| name.unwrap().into_owned()).collect();
+      assert_eq!(names, ["manifest.json", "photos/data338Slot.bin", "role.bin", "summary.bin"]);
+      let mut role = Vec::new();
+      archive.by_name("role.bin").unwrap().read_to_end(&mut role).unwrap();
+      assert_eq!(role, before.roles[&1].0);
+      let manifest: serde_json::Value =
+        serde_json::from_reader(archive.by_name("manifest.json").unwrap()).unwrap();
+      assert_eq!(manifest["version"], 1);
+      assert_eq!(manifest["source_slot"], 1);
+      assert_eq!(
+        manifest["platform"],
+        if platform == TargetPlatform::Steam { "steam" } else { "switch" }
+      );
+      let mut photo = Vec::new();
+      archive.by_name("photos/data338Slot.bin").unwrap().read_to_end(&mut photo).unwrap();
+      assert_eq!(parse_header(&photo).unwrap().raw_flags, 0);
+      checked_header(&photo).unwrap();
+      assert_eq!(load_bundle(&source, options).unwrap().files, before.files);
+    }
+  }
+
+  #[test]
+  fn hunter_export_rejects_empty_slots_unknown_photos_and_overwrites() {
+    let temp = TestDirectory::new();
+    let source = temp.0.join("source");
+    let options = fixture(&source, TargetPlatform::NintendoSwitch, &[1]);
+    let output = temp.0.join("hunter.hunter");
+    for slot in [0, 2, 4] {
+      assert!(export_hunter(&source, &output, slot, options).is_err());
+      assert!(!output.exists());
+    }
+    assert!(export_hunter(&source, &source.join("inside.hunter"), 1, options).is_err());
+    assert!(!source.join("inside.hunter").exists());
+    fs::write(&output, b"existing package").unwrap();
+    assert!(export_hunter(&source, &output, 1, options).is_err());
+    assert_eq!(fs::read(&output).unwrap(), b"existing package");
+    let unknown = temp.0.join("unknown.hunter");
+    fs::write(source.join("SS1_unknown.dat"), b"unknown photo format").unwrap();
+    assert!(export_hunter(&source, &unknown, 1, options).is_err());
+    assert!(!unknown.exists());
   }
 
   #[test]

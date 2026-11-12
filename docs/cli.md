@@ -39,6 +39,30 @@ The output directory must not already exist, its parent must exist, and it must 
 
 The CLI currently supports inspection and pairwise swaps only. For repeated reordering or confirmed character deletion, use the GUI's **Manage slots** tab. Deletion marks a position empty without automatically shifting the remaining characters and applies only when **Save slots** writes a new output bundle. See [Character-slot safety and verification](slot-management.md) for validation and safety limits.
 
+## Export a hunter
+
+```bash
+mhrise-save export-slot /path/to/save /path/to/character.hunter --slot 1 --steamid64 <STEAMID64>
+```
+
+Omit the Steam ID for Switch saves. Only the selected character, its selection-screen summary, and its album are exported. The ZIP package uses the `.hunter` extension and is not encrypted. Source files and existing exports are never overwritten.
+
+### Import a hunter package
+
+```sh
+mhrise-save import-slot character.hunter /path/to/destination-save /path/to/new-save --slot 3 --steamid64 <DESTINATION_STEAMID64>
+```
+
+Steam and Switch packages must be imported into the same platform. Add `--replace` to replace an occupied slot. Other hunters and unrelated files are preserved. The source save is never modified; output must be a new directory outside it. A hunter already present in another slot cannot be imported again.
+
+### Rename a hunter
+
+```sh
+mhrise-save rename-slot /path/to/save /path/to/new-save --slot 1 --name "New Hunter" --steamid64 <STEAMID64>
+```
+
+Names must be nonblank, contain no control characters, and fit within 12 UTF-16 code units. Only the selection-screen name and the hunter's own guild-card name are updated; historical records and other hunters' names are preserved.
+
 ## Switch → Steam
 
 Use an existing Steam save as the target template when possible. It provides the destination schema, platform settings, metadata, and Curve Index:

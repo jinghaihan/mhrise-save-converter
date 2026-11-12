@@ -15,6 +15,25 @@ const LABEL_WIDTH: f32 = 160.0;
 const BROWSE_WIDTH: f32 = 88.0;
 const SLOT_ROW_HEIGHT: f32 = 58.0;
 
+assets::icon_assets!(SlotIcons, [Download, Upload, Trash]);
+
+struct GuiAssets;
+
+impl AssetSource for GuiAssets {
+  fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+    match SlotIcons.load(path)? {
+      Some(icon) => Ok(Some(icon)),
+      None => assets::Assets.load(path),
+    }
+  }
+
+  fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+    let mut names = assets::Assets.list(path)?;
+    names.extend(SlotIcons.list(path)?);
+    Ok(names)
+  }
+}
+
 #[derive(Clone, Copy)]
 enum Field {
   Source,
@@ -43,6 +62,8 @@ impl Field {
 pub(super) struct GuiView {
   model: GuiModel,
   inputs: [Entity<InputState>; 7],
+  slot_names: [Entity<InputState>; 3],
+  slot_names_key: Option<super::SlotInputKey>,
   advanced: bool,
   picking_folder: bool,
   _subscriptions: Vec<Subscription>,
@@ -85,9 +106,21 @@ impl GuiView {
     subscriptions.push(window.observe_window_appearance(|window, cx| {
       Theme::sync_system_appearance(Some(window), cx);
     }));
+    let slot_names = std::array::from_fn(|index| {
+      let input = cx.new(|cx| InputState::new(window, cx).placeholder("Hunter name"));
+      subscriptions.push(cx.subscribe(&input, move |this, input, event, cx| {
+        if matches!(event, InputEvent::Change) {
+          this.model.rename_slot(index, input.read(cx).value().to_string());
+          cx.notify();
+        }
+      }));
+      input
+    });
     Self {
       model: GuiModel::default(),
       inputs,
+      slot_names,
+      slot_names_key: None,
       advanced: false,
       picking_folder: false,
       _subscriptions: subscriptions,
@@ -97,6 +130,20 @@ impl GuiView {
 
   fn busy(&self) -> bool {
     self.model.worker.is_some() || self.picking_folder
+  }
+
+  fn sync_slot_names(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if self.slot_names_key == self.model.slots_key {
+      return;
+    }
+    if let Some(report) = &self.model.slots {
+      for (input, slot) in self.slot_names.iter().zip(&report.slots) {
+        input.update(cx, |input, cx| {
+          input.set_value(slot.name.clone().unwrap_or_default(), window, cx)
+        });
+      }
+    }
+    self.slot_names_key = self.model.slots_key.clone();
   }
 
   fn input(&self, field: Field) -> &Entity<InputState> {
@@ -170,7 +217,83 @@ impl GuiView {
     cx.notify();
   }
 
+  fn export_slot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    if self.busy() || self.model.slot_character(index).is_none() {
+      return;
+    }
+    self.picking_folder = true;
+    cx.spawn_in(window, async move |view, cx| {
+      let selected = rfd::AsyncFileDialog::new()
+        .add_filter("Hunter package", &["hunter"])
+        .set_file_name(format!("Slot{}.hunter", index + 1))
+        .save_file()
+        .await;
+      let _ = cx.update(|window, cx| {
+        let _ = view.update(cx, |this, cx| {
+          this.picking_folder = false;
+          if let Some(file) = selected {
+            this.model.export_slot(index, file.path().to_path_buf());
+            this.after_command(window, cx);
+          }
+          cx.notify();
+        });
+      });
+    })
+    .detach();
+    cx.notify();
+  }
+
+  fn import_slot(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    if self.busy() || self.model.can_save_slots() {
+      return;
+    }
+    if self.model.output.trim().is_empty() {
+      self.model.status = "Choose an output directory first.".into();
+      cx.notify();
+      return;
+    }
+    self.picking_folder = true;
+    cx.spawn_in(window, async move |view, cx| {
+      let selected =
+        rfd::AsyncFileDialog::new().add_filter("Hunter package", &["hunter"]).pick_file().await;
+      let _ = cx.update(|window, cx| {
+        let _ = view.update(cx, |this, cx| {
+          this.picking_folder = false;
+          if let Some(file) = selected {
+            this.model.request_hunter_import(index, file.path().to_path_buf());
+            this.after_command(window, cx);
+          }
+          cx.notify();
+        });
+      });
+    })
+    .detach();
+    cx.notify();
+  }
+
   fn open_confirmations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    if let Some(pending) = self.model.pending_hunter_import.take() {
+      let view = cx.weak_entity();
+      window.open_alert_dialog(cx, move |dialog, _, _| {
+        let pending = pending.clone();
+        let view = view.clone();
+        dialog.title("Replace character?").width(px(420.))
+          .button_props(DialogButtonProps::default().show_cancel(true).ok_text("Import"))
+          .child(format!("Slot {} · {}", pending.index + 1, pending.name.as_deref().unwrap_or("Empty")))
+          .child("The imported character and album replace this slot in the output save. The source stays unchanged.")
+          .on_ok(move |_, window, cx| {
+            let _ = view.update(cx, |this, cx| {
+              this.model.confirm_hunter_import(pending.clone());
+              let view = cx.weak_entity();
+              window.on_next_frame(move |window, cx| {
+                let _ = view.update(cx, |this, cx| this.after_command(window, cx));
+              });
+              cx.notify();
+            });
+            true
+          })
+      });
+    }
     if let Some(pending) = self.model.pending_conversion.take() {
       let view = cx.weak_entity();
       window.open_alert_dialog(cx, move |dialog, _, _| {
@@ -287,12 +410,12 @@ impl GuiView {
           .child(div().w(px(64.)).child("Slot"))
           .child(div().flex_1().child("Character"))
           .child(div().w(px(140.)).child("Progress"))
-          .child(div().w(px(148.)).child("Actions")),
+          .child(div().w(px(164.)).child("Actions")),
       );
     for index in 0..3 {
       let slot = self.model.slot_character(index);
       let occupied = slot.is_some();
-      let name = slot.and_then(|slot| slot.name.clone()).unwrap_or_else(|| "Empty".to_owned());
+      let original = usize::from(self.model.slot_order[index] - 1);
       let mut progress = div()
         .w(px(140.))
         .flex_shrink_0()
@@ -328,13 +451,20 @@ impl GuiView {
               .id(("slot-name", index))
               .flex_1()
               .min_w_0()
-              .truncate()
+              .pr_3()
               .text_color(if occupied {
                 cx.theme().foreground
               } else {
                 cx.theme().muted_foreground
               })
-              .child(name),
+              .when(occupied, |this| {
+                this.child(
+                  Input::new(&self.slot_names[original])
+                    .id(("hunter-name", original))
+                    .disabled(busy),
+                )
+              })
+              .when(!occupied, |this| this.child("Empty")),
           )
           .child(progress)
           .child(
@@ -342,11 +472,11 @@ impl GuiView {
               .flex()
               .items_center()
               .gap_1()
-              .w(px(148.))
+              .w(px(164.))
               .flex_shrink_0()
               .child(
                 Button::new(("up", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(IconName::ArrowUp)
                   .tooltip("Move up")
@@ -358,7 +488,7 @@ impl GuiView {
               )
               .child(
                 Button::new(("down", index))
-                  .outline()
+                  .ghost()
                   .small()
                   .icon(IconName::ArrowDown)
                   .tooltip("Move down")
@@ -369,10 +499,41 @@ impl GuiView {
                   })),
               )
               .child(
+                Button::new(("export", index))
+                  .ghost()
+                  .small()
+                  .icon(assets::IconName::Download)
+                  .tooltip(if self.model.renamed_slots[original].is_some() {
+                    "Save name changes before exporting"
+                  } else {
+                    "Export this hunter and album"
+                  })
+                  .disabled(busy || !occupied || self.model.renamed_slots[original].is_some())
+                  .on_click(
+                    cx.listener(move |this, _, window, cx| this.export_slot(index, window, cx)),
+                  ),
+              )
+              .child(
+                Button::new(("import", index))
+                  .ghost()
+                  .small()
+                  .icon(assets::IconName::Upload)
+                  .tooltip(if self.model.can_save_slots() {
+                    "Save slot changes before importing"
+                  } else {
+                    "Import a .hunter package into this slot"
+                  })
+                  .disabled(busy || self.model.can_save_slots())
+                  .on_click(
+                    cx.listener(move |this, _, window, cx| this.import_slot(index, window, cx)),
+                  ),
+              )
+              .child(
                 Button::new(("delete", index))
                   .ghost()
                   .small()
-                  .label("Delete")
+                  .icon(assets::IconName::Trash)
+                  .tooltip("Delete character")
                   .disabled(busy || !occupied)
                   .on_click(cx.listener(move |this, _, window, cx| {
                     this.model.request_slot_deletion(index);
@@ -417,7 +578,8 @@ impl GuiView {
 }
 
 impl Render for GuiView {
-  fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    self.sync_slot_names(window, cx);
     let busy = self.busy();
     let managing = self.model.mode == GuiMode::ManageSlots;
     let mut form = Form::horizontal()
@@ -491,6 +653,7 @@ impl Render for GuiView {
       content = content.child(div().flex().justify_start().child(
         Button::new("read-save").outline().label("Read save").disabled(busy).on_click(cx.listener(
           |this, _, window, cx| {
+            this.slot_names_key = None;
             this.model.load_slots();
             this.after_command(window, cx);
           },
@@ -578,7 +741,7 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 pub fn run() {
-  application().with_assets(assets::Assets).run(|cx| {
+  application().with_assets(GuiAssets).run(|cx| {
     init(cx);
     Theme::sync_system_appearance(None, cx);
     cx.on_window_closed(|cx, _| {

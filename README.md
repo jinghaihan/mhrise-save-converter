@@ -1,6 +1,6 @@
 # MHRise Save Converter
 
-Convert *Monster Hunter Rise* saves between Nintendo Switch and Steam, transfer Steam saves between accounts, and reorder or delete character slots.
+Convert *Monster Hunter Rise* saves between Nintendo Switch and Steam, transfer Steam saves between accounts, and manage hunters: move, delete, rename, export, and import.
 
 <table>
   <tr>
@@ -16,7 +16,7 @@ Get the latest package from [Releases](https://github.com/jinghaihan/mhrise-save
 Supported platforms: Windows 10+, macOS 15+ (Apple Silicon and Intel), and Linux with a Vulkan-capable graphics driver.
 
 > [!WARNING]
-> Back up your saves and disable Steam Cloud while testing. Switch → Steam has been verified in-game; Steam → Steam has not been fully verified in-game. Steam → Switch and slot deletion still need in-game verification.
+> Back up your saves and disable Steam Cloud while testing. Switch → Steam has been verified in-game; Steam → Steam has not been fully verified in-game. Steam → Switch, slot deletion, hunter import, and renaming still need in-game verification.
 
 ## Convert saves
 
@@ -33,10 +33,14 @@ Source and target saves remain unchanged. Existing output files require confirma
 
 1. Open **Manage slots**, choose the complete source save folder, and enter its SteamID64 if it is a Steam save.
 2. Click **Read save** to display all three slots.
-3. Use **↑ / ↓** to move a character, including into an empty slot. Use **Delete** to mark a slot empty; other characters do not shift.
+3. Use **↑ / ↓** to move a character, edit its name to rename it, or use **Delete** to mark a slot empty. Other characters do not shift when deleting.
 4. Choose a new output folder that does not already exist, then click **Save slots**.
 
 The original save remains unchanged. Click **Read save** again to discard unsaved changes.
+
+Use **Export** in a slot's **Actions** to save that character and its album as a portable `.hunter` ZIP package. The package is not encrypted; sharing it shares the character data.
+
+Open the destination save in **Manage slots**, choose a new output folder, then use **Import** on an empty or occupied slot. Confirm replacement if occupied. Imports support the same platform and rebind Steam hunters to the destination account. Other characters stay unchanged.
 
 ## More help
 
